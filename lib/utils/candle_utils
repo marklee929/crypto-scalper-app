@@ -1,0 +1,69 @@
+import 'dart:convert';
+import 'dart:io';
+import 'package:intl/intl.dart';
+import '../services/coinone_api.dart'; // getCandles 함수 존재 가정
+
+class CandleUtils {
+  static String _getTimestampLabel(String tf) {
+    final now = DateTime.now();
+    if (tf == '1d') return DateFormat('yyyy_MM_dd').format(now);
+    if (tf == '1h') return DateFormat('yyyy_MM_dd_HH').format(now);
+
+    final unit = int.tryParse(tf.replaceAll('m', '')) ?? 0;
+    if (unit > 0) {
+      final adjustedMinute = (now.minute ~/ unit) * unit;
+      final adjusted = DateTime(
+        now.year,
+        now.month,
+        now.day,
+        now.hour,
+        adjustedMinute,
+      );
+      return DateFormat('yyyy_MM_dd_HHmm').format(adjusted);
+    }
+
+    throw ArgumentError('Unsupported timeframe: $tf');
+  }
+
+  static Future<List<Map<String, dynamic>>> getCandlesCached(
+      String symbol, String tf, int size) async {
+    final label = _getTimestampLabel(tf);
+    final file = File('logs/${tf}_candle_${symbol}_$label.json');
+
+    if (await file.exists()) {
+      try {
+        final text = await file.readAsString();
+        final List data = jsonDecode(text);
+        return List<Map<String, dynamic>>.from(data);
+      } catch (e) {
+        print('⚠️ Failed to read cached candle: $e');
+      }
+    }
+
+    // API 호출
+    final candles = await CoinoneApi.getCandles(symbol, tf, size);
+    if (candles.isNotEmpty) {
+      await file.create(recursive: true);
+      await file.writeAsString(JsonEncoder.withIndent('  ').convert(candles));
+    }
+    return candles;
+  }
+
+  static Future<List<Map<String, dynamic>>> get1mCandles(String symbol, {int size = 20}) =>
+      getCandlesCached(symbol, '1m', size);
+
+  static Future<List<Map<String, dynamic>>> get5mCandles(String symbol, {int size = 6}) =>
+      getCandlesCached(symbol, '5m', size);
+
+  static Future<List<Map<String, dynamic>>> get15mCandles(String symbol, {int size = 5}) =>
+      getCandlesCached(symbol, '15m', size);
+
+  static Future<List<Map<String, dynamic>>> get30mCandles(String symbol, {int size = 5}) =>
+      getCandlesCached(symbol, '30m', size);
+
+  static Future<List<Map<String, dynamic>>> getHourlyCandles(String symbol, {int size = 5}) =>
+      getCandlesCached(symbol, '1h', size);
+
+  static Future<List<Map<String, dynamic>>> getDailyCandles(String symbol, {int size = 5}) =>
+      getCandlesCached(symbol, '1d', size);
+}
