@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import '../services/coinone_api.dart';
+import '../services/coinone_private.dart';
 import '../services/auto_trade_service.dart';
 import '../widgets/log_console_box.dart';
 import 'dart:async';
@@ -106,7 +107,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       _canStart = true;
 
       final price = await CoinoneAPI.getCurrentPrice(coin);
-      final balances = await CoinoneAPI.getBalanceMap();
+      final balances = await CoinonePrivate.getBalanceMap();
 
       final qty =
           double.tryParse(balances?[coin.toLowerCase()]?['avail'] ?? '0') ?? 0;

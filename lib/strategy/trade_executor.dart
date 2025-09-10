@@ -1,4 +1,4 @@
-import '../services/coinone_api.dart';
+import '../services/coinone_private.dart';
 import '../utils/log.dart';
 
 class TradeExecutor {
@@ -17,11 +17,13 @@ class TradeExecutor {
     if (qty <= 0) return false;
 
     log.i("🔻 매도 조건 충족 → 전량 매도 시도");
-    final success = await CoinoneAPI.placeOrder(
-      symbol: _targetCoin ?? "",
-      side: "sell",
+    final result = await CoinonePrivate.createMarketOrder(
+      symbol: _targetCoin ?? '',
+      side: 'sell',
       qty: qty,
     );
+
+    final success = result != null && result['result'] == 'success';
 
     if (success) {
       log.i("✅ 전량 매도 완료: $qty $_targetCoin");
@@ -44,11 +46,13 @@ class TradeExecutor {
     final qty = krwBalance / price;
 
     log.i("🟢 매수 조건 충족 → 전액 매수 시도");
-    final success = await CoinoneAPI.placeOrder(
-      symbol: _targetCoin ?? "",
-      side: "buy",
+    final result = await CoinonePrivate.createMarketOrder(
+      symbol: _targetCoin ?? '',
+      side: 'buy',
       qty: qty,
     );
+
+    final success = result != null && result['result'] == 'success';
 
     if (success) {
       log.i("✅ 매수 성공: $qty $_targetCoin");
