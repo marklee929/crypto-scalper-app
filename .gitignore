@@ -53,5 +53,5 @@ app.*.map.json
 
 # --- secrets & 민감정보 ---
 /lib/config/*
-lib/config/config.dart
+!lib/config/config.dart
 
