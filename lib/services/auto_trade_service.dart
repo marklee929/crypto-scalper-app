@@ -12,6 +12,7 @@ import 'notification_service.dart'; // sendNotification 전역 함수 사용
 class AutoTradeService {
   Timer? _timer;
   bool isRunning = false;
+  final int _topK = 5;
 
   String? _targetCoin;
   double? latestPrice;
@@ -62,7 +63,9 @@ class AutoTradeService {
 
     _log("info", "✅ 자동매매 시작됨: $_targetCoin");
 
-    _timer = Timer.periodic(const Duration(seconds: 5), (_) => _tick());
+    _timer =
+        Timer.periodic(const Duration(minutes: 1), (_) => _loop());
+    _loop();
   }
 
   void stop() {
@@ -79,6 +82,29 @@ class AutoTradeService {
 
   String getCurrentTrend() {
     return currentTrend ?? "알 수 없음";
+  }
+
+  Future<void> _loop() async {
+    try {
+      final tickers = await CoinoneAPI.getAllTickers();
+      if (tickers == null || tickers.isEmpty) return;
+
+      final sorted = tickers.entries
+          .map((e) => MapEntry(
+              e.key, double.tryParse(e.value['volume']?.toString() ?? '0') ?? 0))
+          .toList()
+        ..sort((a, b) => b.value.compareTo(a.value));
+      final candidates = sorted.take(_topK).map((e) => e.key).toList();
+
+      if (candidates.isEmpty) return;
+      _log('info', 'Top $_topK candidates: ${candidates.join(', ')}');
+
+      _targetCoin = candidates.first;
+      _executor.setTargetCoin(_targetCoin!);
+      await _tick();
+    } catch (e) {
+      _log('error', '티커 조회 오류: $e');
+    }
   }
 
   Future<void> _tick() async {
