@@ -284,3 +284,23 @@ class AppState {
 * [ ] 로그 뷰어: 초기 30줄, 상/하단 이동, 검색 동작
 * [ ] 체결/오류 푸시 중복 차단 정상 동작
 * [ ] `targetCoin` 비어있을 때 시작 차단 + 저장/복원 확인
+
+---
+
+# ⚙️ Configuration
+
+`lib/config/config.dart` provides an `AppConfig` helper that reads values from a `config.yaml` file or environment variables. Create a `config.yaml` in the project root or define the `API_KEY`, `API_SECRET`, and `BASE_URL` environment variables:
+
+```yaml
+apiKey: YOUR_API_KEY
+apiSecret: YOUR_API_SECRET
+baseUrl: https://api.yourservice.com
+```
+
+Environment variables take precedence over the YAML file. Access the values in code via:
+
+```dart
+final config = AppConfig();
+print(config.apiKey);
+```
+
