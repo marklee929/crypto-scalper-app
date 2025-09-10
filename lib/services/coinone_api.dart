@@ -1,12 +1,9 @@
 import 'dart:convert';
-import 'package:crypto/crypto.dart';
-import 'package:convert/convert.dart';
 import 'package:http/http.dart' as http;
 import '../config/config.dart';
 import '../utils/log.dart';
 import 'package:uuid/uuid.dart';
 import '../utils/rate_limiter.dart';
-
 
 class CoinoneAPI {
   // Simple in-memory cache for candle data
@@ -61,69 +58,6 @@ class CoinoneAPI {
     }
   }
 
-  static Future<List?> getBalances() async {
-    final url = Uri.parse('${AppConfig.baseUrl}/v2.1/account/balance/all');
-    final nonce = const Uuid().v4();  // ✅ UUID v4 형식
-
-    final payload = {
-      "access_token": AppConfig.apiKey,
-      "nonce": nonce,
-    };
-
-    final jsonStr = jsonEncode(payload);
-    final base64Payload = base64.encode(utf8.encode(jsonStr));
-
-    final hmac = Hmac(sha512, utf8.encode(AppConfig.apiSecret));
-    final signature = hex.encode(
-      hmac.convert(utf8.encode(base64Payload)).bytes,
-    );
-
-    final headers = {
-      'Content-Type': 'application/json',
-      'X-COINONE-PAYLOAD': base64Payload,
-      'X-COINONE-SIGNATURE': signature,
-    };
-
-    try {
-      log.d("📡 [잔고 요청] $url");
-
-      final response = await http.post(url, headers: headers, body: jsonStr);
-
-      log.d("📥 [응답 상태] ${response.statusCode}");
-      log.d("📦 [응답 본문] ${response.body}");
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        log.i("💰 잔고 조회 성공");
-        return data['balances'] as List<dynamic>?; // ✅ 리스트로 반환
-      } else {
-        log.w("⚠️ 잔고 조회 실패: ${response.statusCode}");
-        return null;
-      }
-    } catch (e) {
-      log.e("❌ 잔고 조회 오류: $e");
-    }
-    return null;
-  }
-
-  static Future<Map<String, Map<String, String>>> getBalanceMap() async {
-    final raw = await getBalances(); // 기존 리스트 반환 함수
-    if (raw == null) return {};
-
-    final Map<String, Map<String, String>> result = {};
-    for (final item in raw) {
-      final currency = item['currency']?.toString().toLowerCase();
-      if (currency != null) {
-        result[currency] = {
-          'avail': item['available'] ?? '0',
-          'limit': item['limit'] ?? '0',
-          'avg': item['average_price'] ?? '0',
-        };
-      }
-    }
-    return result;
-  }
-
   static Future<List<Map<String, dynamic>>?> getCandles(
     String symbol, {
     required String interval,
@@ -174,56 +108,6 @@ class CoinoneAPI {
     return null;
   }
 
-  static Future<bool> placeOrder({
-    required String symbol,
-    required String side,
-    required double qty,
-  }) async {
-    final endpoint = side == 'buy'
-        ? '/v2/order/market_buy/'
-        : '/v2/order/market_sell/';
-    final url = Uri.parse('${AppConfig.baseUrl}$endpoint');
-
-    final payload = {
-      "access_token": AppConfig.apiKey,
-      "nonce": DateTime.now().millisecondsSinceEpoch.toString(),
-      "qty": qty.toString(),
-      "currency": symbol.toLowerCase(),
-    };
-
-    final jsonStr = jsonEncode(payload);
-    final base64Payload = base64.encode(utf8.encode(jsonStr));
-
-    final hmac = Hmac(sha512, utf8.encode(AppConfig.apiSecret));
-    final signature = hex.encode(
-      hmac.convert(utf8.encode(base64Payload)).bytes,
-    );
-
-    final headers = {
-      'Content-Type': 'application/json',
-      'X-COINONE-PAYLOAD': base64Payload,
-      'X-COINONE-SIGNATURE': signature,
-    };
-
-    try {
-      final response = await http.post(url, headers: headers, body: jsonStr);
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        if (data["result"] == "success") {
-          log.i("✅ $side 주문 성공: $qty $symbol");
-          return true;
-        } else {
-          log.w("⚠️ 주문 실패: ${data['errorMsg']}");
-        }
-      } else {
-        log.e("❌ HTTP 오류: ${response.statusCode}");
-      }
-    } catch (e) {
-      log.e("❗ 예외 발생: $e");
-    }
-    return false;
-  }
 }
 
 class _CandleCache {
