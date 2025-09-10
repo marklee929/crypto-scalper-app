@@ -1,5 +1,6 @@
 import 'dart:async';
 import '../services/coinone_api.dart';
+import '../services/coinone_private.dart';
 import '../strategy/rebound_detector.dart';
 import '../strategy/trend_guard.dart';
 import '../strategy/trade_executor.dart';
@@ -89,7 +90,7 @@ class AutoTradeService {
       if (price == null) return;
       latestPrice = price;
 
-      final balances = await CoinoneAPI.getBalanceMap();
+      final balances = await CoinonePrivate.getBalanceMap();
       final coinData = balances?[_targetCoin!.toLowerCase()];
       final qty = double.tryParse(coinData?["avail"] ?? "0") ?? 0;
       final avg = double.tryParse(coinData?["avg"] ?? "0") ?? 0;
