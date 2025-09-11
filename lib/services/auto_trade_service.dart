@@ -1,10 +1,9 @@
 import 'dart:async';
 import '../services/coinone_api.dart';
 import '../services/coinone_private.dart';
-import '../strategy/rebound_detector.dart';
 import '../strategy/trend_guard.dart';
-import '../strategy/trade_executor.dart';
 import '../strategy/market_analysis.dart';
+import '../trade/order_executor.dart';
 import '../utils/log.dart';
 import '../utils/log_manager.dart';
 // import '../../main.dart'; // 제거: 불필요 의존
@@ -20,9 +19,7 @@ class AutoTradeService {
   double? latestProfitRate;
 
   final _marketAnalysis = MarketAnalysis();
-  final _reboundDetector = ReboundDetector();
   final _trendGuard = TrendGuard();
-  final _executor = TradeExecutor();
 
   String? currentTrend;
 
@@ -59,7 +56,6 @@ class AutoTradeService {
     if (isRunning) return;
     isRunning = true;
     _targetCoin = coin;
-    _executor.setTargetCoin(coin);
     _trendGuard.reset();
 
     _log("info", "✅ 자동매매 시작됨: $_targetCoin");
@@ -101,7 +97,6 @@ class AutoTradeService {
       _log('info', 'Top $_topK candidates: ${candidates.join(', ')}');
 
       _targetCoin = candidates.first;
-      _executor.setTargetCoin(_targetCoin!);
       await _tick();
     } catch (e) {
       _log('error', '티커 조회 오류: $e');
@@ -159,7 +154,12 @@ class AutoTradeService {
 
         if (shouldTakeProfit || shouldCutLoss) {
           _log("info", "📤 매도 조건 감지 (${shouldTakeProfit ? "익절" : "손절"})");
-          await _executor.sellAll(qty);
+          await OrderExecutor.placeWithFallback(
+            _targetCoin!,
+            'sell',
+            qty,
+            price,
+          );
           _trendGuard.reset();
         }
       } else {
@@ -171,7 +171,13 @@ class AutoTradeService {
 
         if (shouldBuy) {
           _log("info", "📥 재매수 조건 충족 → 매수 시도");
-          await _executor.buyAll(krw, price);
+          final buyQty = krw / price;
+          await OrderExecutor.placeWithFallback(
+            _targetCoin!,
+            'buy',
+            buyQty,
+            price,
+          );
         }
       }
 
