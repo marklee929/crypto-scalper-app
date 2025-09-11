@@ -2,8 +2,32 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../config/config.dart';
 import '../utils/log.dart';
+import 'package:uuid/uuid.dart';
+import '../utils/rate_limiter.dart';
 
 class CoinoneAPI {
+  // Simple in-memory cache for candle data
+  static final Map<String, _CandleCache> _candleCache = {};
+
+  static Future<Map<String, dynamic>?> getAllTickers() async {
+    final url = Uri.parse("https://api.coinone.co.kr/ticker?currency=all");
+    try {
+      final response = await RateLimiter.run(() => http.get(url));
+      if (response.statusCode != 200) return null;
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+
+      final result = <String, Map<String, dynamic>>{};
+      data.forEach((key, value) {
+        if (value is Map<String, dynamic> && value.containsKey('volume')) {
+          result[key] = value;
+        }
+      });
+      return result;
+    } catch (e) {
+      log.e("❌ 전체 티커 조회 오류: $e");
+      return null;
+    }
+  }
   static Future<double?> getCurrentPrice(String coin) async {
     final url = Uri.parse("https://api.coinone.co.kr/ticker?currency=$coin");
 
@@ -39,15 +63,21 @@ class CoinoneAPI {
     required String interval,
     int limit = 10,
   }) async {
+    final cacheKey = '$symbol:$interval:$limit';
+    final now = DateTime.now();
+    final cached = _candleCache[cacheKey];
+    if (cached != null && now.difference(cached.fetchedAt).inSeconds < 60) {
+      return cached.data;
+    }
+
     final url = Uri.parse(
       '${AppConfig.baseUrl}/public/v2/chart/KRW/$symbol?interval=$interval&size=$limit',
     );
 
     try {
-
       log.d("📡 [캔들 요청] $url");
 
-      final response = await http.get(url);
+      final response = await RateLimiter.run(() => http.get(url));
 
       log.d("📥 [응답 상태] ${response.statusCode}");
       log.d("📦 [응답 본문] ${response.body}");
@@ -60,7 +90,9 @@ class CoinoneAPI {
         if (data is Map<String, dynamic> && data.containsKey('chart')) {
           final chart = data['chart'];
           if (chart is List) {
-            return List<Map<String, dynamic>>.from(chart);
+            final list = List<Map<String, dynamic>>.from(chart);
+            _candleCache[cacheKey] = _CandleCache(now, list);
+            return list;
           } else {
             log.w("❗ 'chart' 필드는 리스트가 아님");
           }
@@ -76,4 +108,10 @@ class CoinoneAPI {
     return null;
   }
 
+}
+
+class _CandleCache {
+  final DateTime fetchedAt;
+  final List<Map<String, dynamic>> data;
+  _CandleCache(this.fetchedAt, this.data);
 }
