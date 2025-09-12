@@ -110,6 +110,17 @@ lib/
 * **통합:** 가짜 API로 체결→로그→푸시 파이프라인
 * **시뮬:** 과거 캔들로 루프 10분간 재생, 경계 케이스 회귀
 
+## Running Tests
+
+Execute all unit tests with:
+
+```bash
+flutter test
+```
+
+GitHub Actions is configured to run the same command on every push and pull
+request.
+
 ---
 
 # 📦 배포/운영 노트
