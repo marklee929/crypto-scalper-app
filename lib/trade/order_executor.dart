@@ -1,6 +1,35 @@
 import '../services/coinone_private.dart';
 import '../utils/log.dart';
 
+typedef LimitOrderFn = Future<Map<String, dynamic>?> Function({
+  required String symbol,
+  required String side,
+  required double qty,
+  required double price,
+});
+
+typedef MarketOrderFn = Future<Map<String, dynamic>?> Function({
+  required String symbol,
+  required String side,
+  required double qty,
+});
+
+typedef GetOrderFn = Future<Map<String, dynamic>?> Function({
+  required String orderId,
+  required String symbol,
+});
+
+typedef CancelOrderFn = Future<Map<String, dynamic>?> Function({
+  required String orderId,
+  required String symbol,
+});
+
+/// Injectable references to API methods, overridable in tests.
+LimitOrderFn createLimitOrder = CoinonePrivate.createLimitOrder;
+MarketOrderFn createMarketOrder = CoinonePrivate.createMarketOrder;
+GetOrderFn getOrder = CoinonePrivate.getOrder;
+CancelOrderFn cancelOrder = CoinonePrivate.cancelOrder;
+
 class OrderExecutor {
   /// Place a limit order and fall back to market if not fully filled.
   ///
@@ -28,7 +57,7 @@ class OrderExecutor {
     log.i(
         '📦 Placing $side order for $qty $symbol (limit $adjPrice, timeout ${timeoutSec}s)');
 
-    final limitRes = await CoinonePrivate.createLimitOrder(
+    final limitRes = await createLimitOrder(
       symbol: symbol,
       side: side,
       qty: qty,
@@ -37,7 +66,7 @@ class OrderExecutor {
 
     if (limitRes == null || limitRes['result'] != 'success') {
       log.w('❌ Limit order failed, using market order.');
-      final marketRes = await CoinonePrivate.createMarketOrder(
+      final marketRes = await createMarketOrder(
         symbol: symbol,
         side: side,
         qty: qty,
@@ -49,7 +78,7 @@ class OrderExecutor {
         limitRes['order_id']?.toString() ?? limitRes['orderId']?.toString();
     if (orderId == null) {
       log.w('⚠️ No order id returned, fallback to market.');
-      final marketRes = await CoinonePrivate.createMarketOrder(
+      final marketRes = await createMarketOrder(
         symbol: symbol,
         side: side,
         qty: qty,
@@ -62,8 +91,7 @@ class OrderExecutor {
 
     while (DateTime.now().difference(start).inSeconds < timeoutSec) {
       await Future.delayed(const Duration(milliseconds: 500));
-      final info =
-          await CoinonePrivate.getOrder(orderId: orderId, symbol: symbol);
+      final info = await getOrder(orderId: orderId, symbol: symbol);
 
       final remainStr = info?['remaining_qty'] ??
           info?['remainingQty'] ??
@@ -88,11 +116,11 @@ class OrderExecutor {
     }
 
     // Timeout reached - cancel and fallback
-    await CoinonePrivate.cancelOrder(orderId: orderId, symbol: symbol);
+    await cancelOrder(orderId: orderId, symbol: symbol);
 
     if (remaining > 0) {
       log.w('⌛ Timeout, placing market order for remaining $remaining.');
-      final marketRes = await CoinonePrivate.createMarketOrder(
+      final marketRes = await createMarketOrder(
         symbol: symbol,
         side: side,
         qty: remaining,
