@@ -6,6 +6,7 @@ from typing import Any, Dict
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "symbol": "BTC",
+    "quote_currency": "KRW",
     "initial_cash": 1_000_000.0,
     "fee_rate": 0.0005,
     "slippage_rate": 0.0002,
@@ -17,6 +18,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "state_path": "state.json",
     "trades_log_path": "trades.log",
     "hourly_report_path": "hourly_report.log",
+    "ws_ping_interval_sec": 30,
+    "ws_force_reconnect_sec": 21600,
+    "ws_max_backoff_sec": 60,
     "demo_price_start": 50_000.0,
     "demo_price_volatility": 0.003,
     "demo_interval_sec": 5,
