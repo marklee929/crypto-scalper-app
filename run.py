@@ -3,10 +3,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 from datetime import datetime, timedelta
+from pathlib import Path
 import random
 
 from core.config import load_config
-from core.heartbeat import HeartbeatStrategy
+from core.heartbeat import HeartbeatStrategy, format_strategy_log
+from core.market_structure import StructureConfig
 from core.state import StateStore
 from paper.ledger import Ledger
 from paper.report import write_hourly_report, write_trade
@@ -30,6 +32,8 @@ def _build_runtime(config: dict) -> tuple[Ledger, HeartbeatStrategy, StateStore,
         effective_gap=config["effective_gap"],
         trailing_pct=config["trailing_pct"],
         cooldown_sec=config["cooldown_sec"],
+        symbol=str(config.get("symbol", "")),
+        structure_config=_build_structure_config(config),
     )
 
     state_store = StateStore(config["state_path"])
@@ -56,6 +60,7 @@ def _process_tick(
     timestamp: datetime,
 ) -> datetime | None:
     action = strategy.on_tick(price, timestamp)
+    _write_strategy_log(strategy.last_decision, config["strategy_log_path"], timestamp)
     if action == "BUY":
         qty = config["trade_size_cash"] / price
         try:
@@ -98,6 +103,27 @@ def _process_tick(
         }
     )
     return last_report_at
+
+
+def _build_structure_config(config: dict) -> StructureConfig:
+    return StructureConfig(
+        min_candles=int(config["structure_min_candles"]),
+        short_ma_window=int(config["structure_short_ma_window"]),
+        trend_window=int(config["structure_trend_window"]),
+        tolerance_pct=float(config["structure_tolerance_pct"]),
+        min_avg_volume=float(config["structure_min_avg_volume"]),
+        max_spread_pct=float(config["structure_max_spread_pct"]),
+        amplitude_pct=float(config["structure_amplitude_pct"]),
+    )
+
+
+def _write_strategy_log(event: dict, log_path: str, timestamp: datetime) -> None:
+    if not event:
+        return
+    path = Path(log_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(format_strategy_log(event, timestamp.isoformat()) + "\n")
 
 
 def run_demo(config: dict, ticks: int) -> None:

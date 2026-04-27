@@ -11,7 +11,17 @@ trade_size_cash: 100000.0
 report_interval_sec: 3600
 state_path: state.json
 trades_log_path: trades.log
+strategy_log_path: strategy.log
 hourly_report_path: hourly_report.log
+
+# Structure-based strategy parameters
+structure_min_candles: 8
+structure_short_ma_window: 5
+structure_trend_window: 6
+structure_tolerance_pct: 0.002
+structure_min_avg_volume: 0.0
+structure_max_spread_pct: 0.006
+structure_amplitude_pct: 0.10
 
 # Coinone public WS parameters
 ws_ping_interval_sec: 30
