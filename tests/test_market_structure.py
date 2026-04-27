@@ -107,6 +107,56 @@ class MarketStructureTest(unittest.TestCase):
         self.assertTrue(exit_decision.should_exit)
         self.assertTrue(exit_decision.take_profit)
 
+    def test_sideways_conflict_prefers_falling(self) -> None:
+        candles = [
+            c(0.0240, 0.0250, 0.0220, 0.0230, 150),
+            c(0.0230, 0.0248, 0.0221, 0.0232, 120),
+            c(0.0232, 0.0245, 0.0222, 0.0233, 110),
+            c(0.0233, 0.0242, 0.0223, 0.0234, 100),
+            c(0.0234, 0.0240, 0.0224, 0.0235, 95),
+            c(0.0235, 0.0238, 0.0225, 0.0234, 90),
+        ]
+
+        self.assertEqual(classify_sideways(candles, CFG), SidewaysState.FALLING_SIDEWAYS)
+
+    def test_resistance_touch_alone_does_not_exit(self) -> None:
+        candles = [
+            c(0.0200, 0.0210, 0.0198, 0.0208, 100),
+            c(0.0208, 0.0220, 0.0207, 0.0218, 120),
+            c(0.0218, 0.0230, 0.0217, 0.0228, 140),
+            c(0.0228, 0.0235, 0.0225, 0.0232, 160),
+            c(0.0232, 0.0238, 0.0230, 0.0235, 155),
+            c(0.0235, 0.0239, 0.0231, 0.0236, 150),
+        ]
+
+        exit_decision = should_exit(
+            PositionContext(entry_price=0.0220, entry_low=0.0207),
+            candles,
+            config=CFG,
+        )
+
+        self.assertFalse(exit_decision.should_exit)
+        self.assertFalse(exit_decision.take_profit)
+
+    def test_resistance_touch_with_second_profit_signal_exits(self) -> None:
+        candles = [
+            c(0.0200, 0.0210, 0.0198, 0.0208, 100),
+            c(0.0208, 0.0220, 0.0207, 0.0218, 170),
+            c(0.0218, 0.0230, 0.0217, 0.0228, 150),
+            c(0.0228, 0.0238, 0.0225, 0.0231, 130),
+            c(0.0231, 0.0240, 0.0229, 0.0234, 100),
+            c(0.0234, 0.0242, 0.0230, 0.0236, 80),
+        ]
+
+        exit_decision = should_exit(
+            PositionContext(entry_price=0.0220, entry_low=0.0207),
+            candles,
+            config=CFG,
+        )
+
+        self.assertTrue(exit_decision.should_exit)
+        self.assertTrue(exit_decision.take_profit)
+
 
 if __name__ == "__main__":
     unittest.main()

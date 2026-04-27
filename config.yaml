@@ -8,6 +8,7 @@ effective_gap: 0.01
 trailing_pct: 0.01
 cooldown_sec: 300
 trade_size_cash: 100000.0
+min_trade_cash: 100.0
 report_interval_sec: 3600
 state_path: state.json
 trades_log_path: trades.log
@@ -22,6 +23,9 @@ structure_tolerance_pct: 0.002
 structure_min_avg_volume: 0.0
 structure_max_spread_pct: 0.006
 structure_amplitude_pct: 0.10
+
+# Candle aggregation
+candle_interval_sec: 60
 
 # Coinone public WS parameters
 ws_ping_interval_sec: 30

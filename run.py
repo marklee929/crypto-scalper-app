@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import random
 
+from core.candle_aggregator import CandleAggregator
 from core.config import load_config
 from core.heartbeat import HeartbeatStrategy, format_strategy_log
 from core.market_structure import StructureConfig
@@ -20,13 +21,15 @@ def demo_price_stream(config: dict, ticks: int):
     interval = int(config["demo_interval_sec"])
     now = datetime.utcnow()
     for _ in range(ticks):
-        yield now, price
+        yield now, price, 1.0
         shock = rng.uniform(-config["demo_price_volatility"], config["demo_price_volatility"])
         price = max(0.01, price * (1 + shock))
         now = now + timedelta(seconds=interval)
 
 
-def _build_runtime(config: dict) -> tuple[Ledger, HeartbeatStrategy, StateStore, datetime | None]:
+def _build_runtime(
+    config: dict,
+) -> tuple[Ledger, HeartbeatStrategy, StateStore, CandleAggregator, datetime | None]:
     ledger = Ledger(config["initial_cash"])
     strategy = HeartbeatStrategy(
         effective_gap=config["effective_gap"],
@@ -35,6 +38,7 @@ def _build_runtime(config: dict) -> tuple[Ledger, HeartbeatStrategy, StateStore,
         symbol=str(config.get("symbol", "")),
         structure_config=_build_structure_config(config),
     )
+    aggregator = CandleAggregator(interval_sec=int(config.get("candle_interval_sec", 60)))
 
     state_store = StateStore(config["state_path"])
     saved_state = state_store.load()
@@ -47,7 +51,7 @@ def _build_runtime(config: dict) -> tuple[Ledger, HeartbeatStrategy, StateStore,
     if saved_state.get("last_report_at"):
         last_report_at = datetime.fromisoformat(saved_state["last_report_at"])
 
-    return ledger, strategy, state_store, last_report_at
+    return ledger, strategy, state_store, aggregator, last_report_at
 
 
 def _process_tick(
@@ -55,25 +59,47 @@ def _process_tick(
     ledger: Ledger,
     strategy: HeartbeatStrategy,
     state_store: StateStore,
+    aggregator: CandleAggregator,
     last_report_at: datetime | None,
     price: float,
     timestamp: datetime,
+    volume: float = 0.0,
 ) -> datetime | None:
-    action = strategy.on_tick(price, timestamp)
-    _write_strategy_log(strategy.last_decision, config["strategy_log_path"], timestamp)
+    update = aggregator.update(price, timestamp, volume)
+    action = None
+    decision_evaluated = update.closed is not None
+    if update.closed is not None:
+        action = strategy.on_candle(update.closed)
+    if decision_evaluated:
+        _write_strategy_log(strategy.last_decision, config["strategy_log_path"], timestamp)
     if action == "BUY":
-        qty = config["trade_size_cash"] / price
-        try:
-            event = ledger.buy(
-                price=price,
-                qty=qty,
-                fee_rate=config["fee_rate"],
-                slippage_rate=config["slippage_rate"],
-                timestamp=timestamp.isoformat(),
-            )
-            write_trade(event, config["trades_log_path"])
-        except ValueError:
-            pass
+        trade_cash = min(float(config["trade_size_cash"]), float(ledger.cash))
+        min_trade_cash = float(config.get("min_trade_cash", 0.0))
+        if trade_cash < min_trade_cash:
+            strategy.last_decision = {
+                **strategy.last_decision,
+                "event": "BUY_SKIPPED",
+                "reason": (
+                    f"below_min_trade_cash trade_cash={trade_cash:.2f} "
+                    f"min_trade_cash={min_trade_cash:.2f}"
+                ),
+                "trade_cash": trade_cash,
+                "min_trade_cash": min_trade_cash,
+            }
+            _write_strategy_log(strategy.last_decision, config["strategy_log_path"], timestamp)
+        else:
+            qty = trade_cash / price
+            try:
+                event = ledger.buy(
+                    price=price,
+                    qty=qty,
+                    fee_rate=config["fee_rate"],
+                    slippage_rate=config["slippage_rate"],
+                    timestamp=timestamp.isoformat(),
+                )
+                write_trade(event, config["trades_log_path"])
+            except ValueError:
+                pass
     elif action == "SELL" and ledger.position_qty > 0:
         try:
             event = ledger.sell(
@@ -127,16 +153,16 @@ def _write_strategy_log(event: dict, log_path: str, timestamp: datetime) -> None
 
 
 def run_demo(config: dict, ticks: int) -> None:
-    ledger, strategy, state_store, last_report_at = _build_runtime(config)
+    ledger, strategy, state_store, aggregator, last_report_at = _build_runtime(config)
 
-    for timestamp, price in demo_price_stream(config, ticks):
+    for timestamp, price, volume in demo_price_stream(config, ticks):
         last_report_at = _process_tick(
-            config, ledger, strategy, state_store, last_report_at, price, timestamp
+            config, ledger, strategy, state_store, aggregator, last_report_at, price, timestamp, volume
         )
 
 
 async def run_live(config: dict) -> None:
-    ledger, strategy, state_store, last_report_at = _build_runtime(config)
+    ledger, strategy, state_store, aggregator, last_report_at = _build_runtime(config)
 
     from exchanges.coinone.ws import CoinoneWebSocket
 
@@ -148,10 +174,10 @@ async def run_live(config: dict) -> None:
         max_backoff_sec=int(config.get("ws_max_backoff_sec", 60)),
     )
 
-    async def handle_price(price: float, timestamp: datetime) -> None:
+    async def handle_price(price: float, timestamp: datetime, volume: float = 0.0) -> None:
         nonlocal last_report_at
         last_report_at = _process_tick(
-            config, ledger, strategy, state_store, last_report_at, price, timestamp
+            config, ledger, strategy, state_store, aggregator, last_report_at, price, timestamp, volume
         )
 
     await ws.run_forever(handle_price)
@@ -162,12 +188,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", default="config.yaml")
     parser.add_argument("--mode", choices=["demo", "live"], default="demo")
     parser.add_argument("--ticks", type=int, default=None)
+    parser.add_argument(
+        "--min-trade-cash",
+        "--min",
+        dest="min_trade_cash",
+        type=float,
+        default=None,
+        help="Override minimum trade cash for this run.",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     config = load_config(args.config)
+    if args.min_trade_cash is not None:
+        config["min_trade_cash"] = args.min_trade_cash
     if args.mode == "live":
         asyncio.run(run_live(config))
     else:

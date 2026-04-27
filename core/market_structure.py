@@ -256,9 +256,14 @@ def classify_sideways(candles: Iterable[Candle | Mapping[str, Any]], config: Str
         below_short_ma(rows, cfg),
         failed_resistance_retest(rows, cfg),
     ]
-    if sum(accumulation) >= 3:
+    accumulation_score = sum(accumulation)
+    falling_score = sum(falling)
+
+    if falling_score >= 3 and falling_score >= accumulation_score:
+        return SidewaysState.FALLING_SIDEWAYS
+    if accumulation_score >= 3:
         return SidewaysState.ACCUMULATION_SIDEWAYS
-    if sum(falling) >= 3:
+    if falling_score >= 3:
         return SidewaysState.FALLING_SIDEWAYS
     return SidewaysState.NONE
 
@@ -378,11 +383,12 @@ def should_exit(
     if failed_to_make_new_high(rows, cfg):
         take_profit_reasons.append("failed_new_high")
 
-    all_reasons = tuple(reasons or take_profit_reasons)
+    hard_exit = bool(reasons)
+    take_profit = len(take_profit_reasons) >= 2
     return ExitDecision(
-        should_exit=bool(reasons or take_profit_reasons),
-        take_profit=bool(take_profit_reasons),
-        reasons=all_reasons,
+        should_exit=hard_exit or take_profit,
+        take_profit=take_profit,
+        reasons=tuple(reasons if hard_exit else take_profit_reasons),
         market=market,
     )
 

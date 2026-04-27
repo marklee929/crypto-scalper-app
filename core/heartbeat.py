@@ -79,8 +79,21 @@ class HeartbeatStrategy:
         volume: float = 1.0,
         btc_state: Any = None,
     ) -> Optional[str]:
-        self._candles.append(candle_from_tick(price, timestamp, volume))
+        # Legacy fallback for callers that still provide raw ticks. Runtime
+        # paths aggregate ticks and call on_candle() with closed candles.
+        candle = candle_from_tick(price, timestamp, volume)
+        return self.on_candle(candle, btc_state=btc_state)
+
+    def on_candle(
+        self,
+        candle: Candle,
+        *,
+        btc_state: Any = None,
+    ) -> Optional[str]:
+        self._candles.append(candle)
         candles = list(self._candles)
+        price = candle.close
+        timestamp = _parse_candle_timestamp(candle)
 
         if self.recent_low is None or price < self.recent_low:
             self.recent_low = price
@@ -258,3 +271,12 @@ def _to_optional_float(value: Optional[float]) -> Optional[float]:
     if value is None:
         return None
     return float(value)
+
+
+def _parse_candle_timestamp(candle: Candle) -> datetime:
+    if candle.timestamp:
+        try:
+            return datetime.fromisoformat(candle.timestamp)
+        except ValueError:
+            pass
+    return datetime.utcnow()

@@ -34,7 +34,7 @@ class CoinoneWebSocket:
 
     async def run_forever(
         self,
-        on_price: Callable[[float, datetime], Any],
+        on_price: Callable[[float, datetime, float], Any],
         on_message: Optional[Callable[[dict], Any]] = None,
     ) -> None:
         backoff = 1
@@ -92,7 +92,7 @@ class CoinoneWebSocket:
 
     async def _recv_loop(
         self,
-        on_price: Callable[[float, datetime], Any],
+        on_price: Callable[[float, datetime, float], Any],
         on_message: Optional[Callable[[dict], Any]],
     ) -> None:
         if not self._ws:
@@ -112,8 +112,8 @@ class CoinoneWebSocket:
             parsed = _parse_price_message(message, self.symbol, self.quote_currency)
             if parsed is None:
                 continue
-            price, timestamp = parsed
-            result = on_price(price, timestamp)
+            price, timestamp, volume = parsed
+            result = on_price(price, timestamp, volume)
             if asyncio.iscoroutine(result):
                 await result
 
@@ -144,7 +144,7 @@ def _normalize_symbol(symbol: str, quote_currency: str) -> tuple[str, str]:
 
 def _parse_price_message(
     message: dict, target_symbol: str, quote_currency: str
-) -> Optional[tuple[float, datetime]]:
+) -> Optional[tuple[float, datetime, float]]:
     payload = message.get("data") or message.get("payload") or message
     if isinstance(payload, list):
         for item in payload:
@@ -163,7 +163,8 @@ def _parse_price_message(
     if price is None:
         return None
     timestamp = _extract_timestamp(payload) or _extract_timestamp(message) or datetime.utcnow()
-    return price, timestamp
+    volume = _extract_volume(payload)
+    return price, timestamp, volume
 
 
 def _matches_symbol(payload: dict, target_symbol: str, quote_currency: str) -> bool:
@@ -181,6 +182,23 @@ def _extract_price(payload: dict) -> Optional[float]:
         if key in payload:
             return _to_float(payload.get(key))
     return None
+
+
+def _extract_volume(payload: dict) -> float:
+    for key in (
+        "volume",
+        "qty",
+        "quantity",
+        "amount",
+        "trade_volume",
+        "trade_qty",
+        "target_volume",
+    ):
+        if key in payload:
+            value = _to_float(payload.get(key))
+            if value is not None:
+                return value
+    return 0.0
 
 
 def _extract_timestamp(payload: dict) -> Optional[datetime]:
