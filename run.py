@@ -157,22 +157,22 @@ def _write_strategy_log(event: dict, log_path: str, timestamp: datetime) -> None
         handle.write(format_strategy_log(event, timestamp.isoformat()) + "\n")
 
 
-def run_demo(config: dict, ticks: int, *, once: bool = False) -> None:
+def run_demo(config: dict, ticks: int, *, continuous: bool = False) -> None:
     ledger, strategy, state_store, aggregator, last_report_at = _build_runtime(config)
     closed_candles = 0
     trade_count_before = len(ledger.trades)
 
     print(
         f"[RUN] mode=demo symbol={config.get('symbol')} ticks={ticks} "
-        f"continuous={not once} "
+        f"continuous={continuous} "
         f"candle_interval_sec={config.get('candle_interval_sec')} "
         f"min_trade_cash={config.get('min_trade_cash')}"
     )
 
     processed_ticks = 0
     try:
-        stream_ticks = ticks if once else None
-        for timestamp, price, volume in demo_price_stream(config, stream_ticks, realtime=not once):
+        stream_ticks = None if continuous else ticks
+        for timestamp, price, volume in demo_price_stream(config, stream_ticks, realtime=continuous):
             before_decision = dict(strategy.last_decision)
             last_report_at = _process_tick(
                 config, ledger, strategy, state_store, aggregator, last_report_at, price, timestamp, volume
@@ -180,7 +180,7 @@ def run_demo(config: dict, ticks: int, *, once: bool = False) -> None:
             processed_ticks += 1
             if strategy.last_decision and strategy.last_decision != before_decision:
                 closed_candles += 1
-            if not once and ticks > 0 and processed_ticks % ticks == 0:
+            if continuous and ticks > 0 and processed_ticks % ticks == 0:
                 _print_run_summary(
                     "STATUS",
                     config,
@@ -236,6 +236,7 @@ def _print_run_summary(
 
 
 async def run_live(config: dict) -> None:
+    _validate_live_config(config)
     ledger, strategy, state_store, aggregator, last_report_at = _build_runtime(config)
 
     from exchanges.coinone.ws import CoinoneWebSocket
@@ -254,23 +255,45 @@ async def run_live(config: dict) -> None:
             config, ledger, strategy, state_store, aggregator, last_report_at, price, timestamp, volume
         )
 
-    print(
-        f"[RUN] mode=live symbol={config.get('symbol')} "
-        f"candle_interval_sec={config.get('candle_interval_sec')} "
-        f"min_trade_cash={config.get('min_trade_cash')}"
-    )
+    _log_runtime_config(config, "live")
+    print(f"[RUN] mode=live symbol={config.get('symbol')}")
     await ws.run_forever(handle_price)
 
 
+def _validate_live_config(config: dict) -> None:
+    symbol = str(config.get("symbol", "")).strip().upper()
+    if not symbol:
+        raise ValueError("live mode requires explicit symbol in config.")
+    if symbol == "BTC":
+        raise ValueError(
+            "live mode is using fallback/default symbol BTC. "
+            "Use an explicit config file such as --config config.robo.yaml."
+        )
+
+
+def _log_runtime_config(config: dict, mode: str) -> None:
+    print(
+        "[RUNTIME_CONFIG] "
+        f"mode={mode} "
+        f"symbol={config.get('symbol')} "
+        f"quote={config.get('quote_currency')} "
+        f"trade_size={config.get('trade_size_cash')} "
+        f"min_trade={config.get('min_trade_cash')} "
+        f"candle={config.get('candle_interval_sec')}s "
+        f"state_path={config.get('state_path')} "
+        f"strategy_log={config.get('strategy_log_path')}"
+    )
+
+
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Heart Beat Coin Scalper (demo).")
+    parser = argparse.ArgumentParser(description="Heart Beat Coin Scalper.")
     parser.add_argument("--config", default="config.yaml")
-    parser.add_argument("--mode", choices=["demo", "live"], default="demo")
+    parser.add_argument("--mode", choices=["demo", "live"], default="live")
     parser.add_argument("--ticks", type=int, default=None)
     parser.add_argument(
-        "--once",
+        "--continuous",
         action="store_true",
-        help="Run demo for the requested tick count and exit. Without this, demo stays running.",
+        help="Keep demo running continuously. Without this, demo exits after --ticks.",
     )
     parser.add_argument(
         "--min-trade-cash",
@@ -288,11 +311,12 @@ def main() -> None:
     config = load_config(args.config)
     if args.min_trade_cash is not None:
         config["min_trade_cash"] = args.min_trade_cash
-    if args.mode == "live":
-        asyncio.run(run_live(config))
-    else:
+    if args.mode == "demo":
         ticks = args.ticks if args.ticks is not None else int(config["demo_ticks"])
-        run_demo(config, ticks, once=bool(args.once))
+        _log_runtime_config(config, "demo")
+        run_demo(config, ticks, continuous=bool(args.continuous))
+    else:
+        asyncio.run(run_live(config))
 
 
 if __name__ == "__main__":
