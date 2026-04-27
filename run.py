@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 import random
+import time
 
 from core.candle_aggregator import CandleAggregator
 from core.config import load_config
@@ -15,16 +16,20 @@ from paper.ledger import Ledger
 from paper.report import write_hourly_report, write_trade
 
 
-def demo_price_stream(config: dict, ticks: int):
+def demo_price_stream(config: dict, ticks: int | None = None, *, realtime: bool = False):
     rng = random.Random(config["demo_seed"])
     price = float(config["demo_price_start"])
     interval = int(config["demo_interval_sec"])
-    now = datetime.utcnow()
-    for _ in range(ticks):
+    now = datetime.now(UTC).replace(tzinfo=None)
+    emitted = 0
+    while ticks is None or emitted < ticks:
         yield now, price, 1.0
         shock = rng.uniform(-config["demo_price_volatility"], config["demo_price_volatility"])
         price = max(0.01, price * (1 + shock))
         now = now + timedelta(seconds=interval)
+        emitted += 1
+        if realtime:
+            time.sleep(max(0, interval))
 
 
 def _build_runtime(
@@ -152,13 +157,82 @@ def _write_strategy_log(event: dict, log_path: str, timestamp: datetime) -> None
         handle.write(format_strategy_log(event, timestamp.isoformat()) + "\n")
 
 
-def run_demo(config: dict, ticks: int) -> None:
+def run_demo(config: dict, ticks: int, *, once: bool = False) -> None:
     ledger, strategy, state_store, aggregator, last_report_at = _build_runtime(config)
+    closed_candles = 0
+    trade_count_before = len(ledger.trades)
 
-    for timestamp, price, volume in demo_price_stream(config, ticks):
-        last_report_at = _process_tick(
-            config, ledger, strategy, state_store, aggregator, last_report_at, price, timestamp, volume
+    print(
+        f"[RUN] mode=demo symbol={config.get('symbol')} ticks={ticks} "
+        f"continuous={not once} "
+        f"candle_interval_sec={config.get('candle_interval_sec')} "
+        f"min_trade_cash={config.get('min_trade_cash')}"
+    )
+
+    processed_ticks = 0
+    try:
+        stream_ticks = ticks if once else None
+        for timestamp, price, volume in demo_price_stream(config, stream_ticks, realtime=not once):
+            before_decision = dict(strategy.last_decision)
+            last_report_at = _process_tick(
+                config, ledger, strategy, state_store, aggregator, last_report_at, price, timestamp, volume
+            )
+            processed_ticks += 1
+            if strategy.last_decision and strategy.last_decision != before_decision:
+                closed_candles += 1
+            if not once and ticks > 0 and processed_ticks % ticks == 0:
+                _print_run_summary(
+                    "STATUS",
+                    config,
+                    ledger,
+                    strategy,
+                    processed_ticks,
+                    closed_candles,
+                    trade_count_before,
+                )
+    except KeyboardInterrupt:
+        _print_run_summary(
+            "STOP",
+            config,
+            ledger,
+            strategy,
+            processed_ticks,
+            closed_candles,
+            trade_count_before,
         )
+        return
+
+    _print_run_summary(
+        "DONE",
+        config,
+        ledger,
+        strategy,
+        processed_ticks,
+        closed_candles,
+        trade_count_before,
+    )
+
+
+def _print_run_summary(
+    label: str,
+    config: dict,
+    ledger: Ledger,
+    strategy: HeartbeatStrategy,
+    processed_ticks: int,
+    closed_candles: int,
+    trade_count_before: int,
+) -> None:
+    summary = ledger.summary(float(strategy.last_decision.get("current_price") or config["demo_price_start"]))
+    print(
+        f"[{label}] mode=demo processed_ticks={processed_ticks} closed_candles={closed_candles} "
+        f"new_trades={len(ledger.trades) - trade_count_before} "
+        f"state={strategy.state} last_event={strategy.last_decision.get('event', '')} "
+        f"last_market={strategy.last_decision.get('state', '')} equity={summary['equity']:.2f}"
+    )
+    print(
+        f"[LOG] strategy={config['strategy_log_path']} trades={config['trades_log_path']} "
+        f"state_file={config['state_path']}"
+    )
 
 
 async def run_live(config: dict) -> None:
@@ -180,6 +254,11 @@ async def run_live(config: dict) -> None:
             config, ledger, strategy, state_store, aggregator, last_report_at, price, timestamp, volume
         )
 
+    print(
+        f"[RUN] mode=live symbol={config.get('symbol')} "
+        f"candle_interval_sec={config.get('candle_interval_sec')} "
+        f"min_trade_cash={config.get('min_trade_cash')}"
+    )
     await ws.run_forever(handle_price)
 
 
@@ -188,6 +267,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", default="config.yaml")
     parser.add_argument("--mode", choices=["demo", "live"], default="demo")
     parser.add_argument("--ticks", type=int, default=None)
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="Run demo for the requested tick count and exit. Without this, demo stays running.",
+    )
     parser.add_argument(
         "--min-trade-cash",
         "--min",
@@ -208,7 +292,7 @@ def main() -> None:
         asyncio.run(run_live(config))
     else:
         ticks = args.ticks if args.ticks is not None else int(config["demo_ticks"])
-        run_demo(config, ticks)
+        run_demo(config, ticks, once=bool(args.once))
 
 
 if __name__ == "__main__":

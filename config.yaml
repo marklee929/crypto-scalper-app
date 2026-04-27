@@ -1,5 +1,5 @@
 # Heart Beat Coin Scalper config (Phase 1 defaults)
-symbol: XRP
+symbol: ROBO
 quote_currency: KRW
 initial_cash: 1000000.0
 fee_rate: 0.0005
