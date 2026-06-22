@@ -5,14 +5,16 @@ from typing import Any, Dict
 
 
 DEFAULT_CONFIG: Dict[str, Any] = {
-    "symbol": "BTC",
-    "quote_currency": "KRW",
+    "exchange": "binance",
+    "symbol": "ROBOUSDT",
+    "market": "spot",
     "initial_cash": 1_000_000.0,
     "fee_rate": 0.0005,
     "slippage_rate": 0.0002,
     "effective_gap": 0.01,
     "trailing_pct": 0.01,
     "cooldown_sec": 300,
+    "trade_size": 100_000.0,
     "trade_size_cash": 100_000.0,
     "min_trade_cash": 100.0,
     "report_interval_sec": 3600,
@@ -28,9 +30,14 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "structure_max_spread_pct": 0.006,
     "structure_amplitude_pct": 0.10,
     "candle_interval_sec": 60,
-    "ws_ping_interval_sec": 30,
-    "ws_force_reconnect_sec": 21600,
+    "ws_ping_interval_sec": 20,
+    "ws_no_data_timeout_sec": 60,
+    "ws_status_interval_sec": 30,
     "ws_max_backoff_sec": 60,
+    "binance_api_key": "",
+    "binance_api_secret": "",
+    "binance_rest_url": "https://api.binance.com",
+    "live_order_enabled": False,
     "demo_price_start": 50_000.0,
     "demo_price_volatility": 0.003,
     "demo_interval_sec": 5,
@@ -56,6 +63,8 @@ def load_config(path: str | Path) -> Dict[str, Any]:
 
     merged = DEFAULT_CONFIG.copy()
     merged.update(data)
+    if "trade_size" in data:
+        merged["trade_size_cash"] = data["trade_size"]
     return merged
 
 

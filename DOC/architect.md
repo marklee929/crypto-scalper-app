@@ -41,9 +41,9 @@ heart_beat_coin_scalper/
 │  └─ oracle.py           # 예언자(조언자) 모델
 │
 ├─ exchanges/
-│  └─ coinone/
-│     ├─ rest.py          # Coinone REST v2.1
-│     └─ ws.py            # (선택) WebSocket
+?  ?? binance/
+?     ?? rest.py          # Binance REST /api/v3/order
+?     ?? ws.py            # Binance trade/ticker WebSocket
 │
 ├─ paper/
 │  ├─ ledger.py           # 가상 시트, 손익 계산

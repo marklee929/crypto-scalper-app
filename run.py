@@ -3,9 +3,11 @@ from __future__ import annotations
 import argparse
 import asyncio
 from datetime import UTC, datetime, timedelta
+import os
 from pathlib import Path
 import random
 import time
+from typing import Any
 
 from core.candle_aggregator import CandleAggregator
 from core.config import load_config
@@ -69,6 +71,7 @@ def _process_tick(
     price: float,
     timestamp: datetime,
     volume: float = 0.0,
+    order_client: Any = None,
 ) -> datetime | None:
     update = aggregator.update(price, timestamp, volume)
     action = None
@@ -95,6 +98,7 @@ def _process_tick(
         else:
             qty = trade_cash / price
             try:
+                _place_live_order_if_enabled(config, order_client, "BUY", qty)
                 event = ledger.buy(
                     price=price,
                     qty=qty,
@@ -107,6 +111,7 @@ def _process_tick(
                 pass
     elif action == "SELL" and ledger.position_qty > 0:
         try:
+            _place_live_order_if_enabled(config, order_client, "SELL", ledger.position_qty)
             event = ledger.sell(
                 price=price,
                 qty=ledger.position_qty,
@@ -134,6 +139,14 @@ def _process_tick(
         }
     )
     return last_report_at
+
+
+def _place_live_order_if_enabled(config: dict, order_client: Any, side: str, qty: float) -> None:
+    if not bool(config.get("live_order_enabled", False)):
+        return
+    if order_client is None:
+        raise RuntimeError("live_order_enabled requires a configured BinanceRestClient.")
+    order_client.place_market_order(str(config["symbol"]), side, qty)
 
 
 def _build_structure_config(config: dict) -> StructureConfig:
@@ -239,21 +252,30 @@ async def run_live(config: dict) -> None:
     _validate_live_config(config)
     ledger, strategy, state_store, aggregator, last_report_at = _build_runtime(config)
 
-    from exchanges.coinone.ws import CoinoneWebSocket
+    from exchanges.binance.rest import BinanceRestClient
+    from exchanges.binance.ws import BinanceWebSocket
 
-    ws = CoinoneWebSocket(
+    order_client = BinanceRestClient(
+        api_key=str(config.get("binance_api_key") or os.getenv("BINANCE_API_KEY", "")),
+        api_secret=str(config.get("binance_api_secret") or os.getenv("BINANCE_API_SECRET", "")),
+        base_url=str(config.get("binance_rest_url") or "https://api.binance.com"),
+    )
+    ws = BinanceWebSocket(
         symbol=config["symbol"],
-        quote_currency=config.get("quote_currency", "KRW"),
         ping_interval_sec=int(config.get("ws_ping_interval_sec", 30)),
-        force_reconnect_sec=int(config.get("ws_force_reconnect_sec", 6 * 60 * 60)),
+        no_data_timeout_sec=int(config.get("ws_no_data_timeout_sec", 5)),
+        status_interval_sec=int(config.get("ws_status_interval_sec", 30)),
         max_backoff_sec=int(config.get("ws_max_backoff_sec", 60)),
     )
 
     async def handle_price(price: float, timestamp: datetime, volume: float = 0.0) -> None:
         nonlocal last_report_at
+        before_decision = dict(strategy.last_decision)
         last_report_at = _process_tick(
-            config, ledger, strategy, state_store, aggregator, last_report_at, price, timestamp, volume
+            config, ledger, strategy, state_store, aggregator, last_report_at, price, timestamp, volume, order_client
         )
+        if strategy.last_decision and strategy.last_decision != before_decision:
+            _print_live_decision(strategy, ledger, price, timestamp)
 
     _log_runtime_config(config, "live")
     print(f"[RUN] mode=live symbol={config.get('symbol')}")
@@ -261,27 +283,55 @@ async def run_live(config: dict) -> None:
 
 
 def _validate_live_config(config: dict) -> None:
+    exchange = str(config.get("exchange", "binance")).strip().lower()
+    if exchange != "binance":
+        raise ValueError("live mode now supports Binance only. Set exchange=binance.")
     symbol = str(config.get("symbol", "")).strip().upper()
     if not symbol:
         raise ValueError("live mode requires explicit symbol in config.")
     if symbol == "BTC":
         raise ValueError(
             "live mode is using fallback/default symbol BTC. "
-            "Use an explicit config file such as --config config.robo.yaml."
+            "Use an explicit Binance symbol such as ROBOUSDT."
         )
+    if "/" in symbol or "-" in symbol:
+        raise ValueError("Binance live mode requires compact symbols such as ROBOUSDT.")
+    if bool(config.get("live_order_enabled", False)):
+        api_key = str(config.get("binance_api_key") or os.getenv("BINANCE_API_KEY", "")).strip()
+        api_secret = str(config.get("binance_api_secret") or os.getenv("BINANCE_API_SECRET", "")).strip()
+        if not api_key or not api_secret:
+            raise ValueError("live_order_enabled requires BINANCE_API_KEY and BINANCE_API_SECRET.")
 
 
 def _log_runtime_config(config: dict, mode: str) -> None:
     print(
         "[RUNTIME_CONFIG] "
         f"mode={mode} "
+        f"exchange={config.get('exchange')} "
         f"symbol={config.get('symbol')} "
-        f"quote={config.get('quote_currency')} "
+        f"market={config.get('market')} "
         f"trade_size={config.get('trade_size_cash')} "
         f"min_trade={config.get('min_trade_cash')} "
         f"candle={config.get('candle_interval_sec')}s "
+        f"ws_status={config.get('ws_status_interval_sec')}s "
+        f"live_order_enabled={config.get('live_order_enabled')} "
         f"state_path={config.get('state_path')} "
         f"strategy_log={config.get('strategy_log_path')}"
+    )
+
+
+def _print_live_decision(strategy: HeartbeatStrategy, ledger: Ledger, price: float, timestamp: datetime) -> None:
+    decision = strategy.last_decision or {}
+    score = decision.get("score") or {}
+    summary = ledger.summary(price)
+    print(
+        "[LIVE_DECISION] "
+        f"ts={timestamp.isoformat()} symbol={decision.get('symbol', '')} "
+        f"event={decision.get('event', '')} market={decision.get('state', '')} "
+        f"score={score.get('total', 0)} reason={decision.get('reason', '')} "
+        f"price={price:.12g} cash={summary['cash']:.2f} "
+        f"position={summary['position_qty']:.12g} equity={summary['equity']:.2f}",
+        flush=True,
     )
 
 

@@ -38,7 +38,7 @@
 ---
 
 ## Phase 5 – Exchange Integration (Week 3)
-- Coinone REST v2.1
+- Binance REST / WebSocket
 - 실데이터 paper trading
 
 ---

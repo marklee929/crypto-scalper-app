@@ -1,1 +1,0 @@
-"""Coinone exchange integrations."""

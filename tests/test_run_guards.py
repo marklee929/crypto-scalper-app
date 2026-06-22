@@ -8,9 +8,10 @@ import unittest
 from unittest.mock import patch
 
 from core.candle_aggregator import CandleAggregator
+from core.config import load_config
 from core.state import StateStore
 from paper.ledger import Ledger
-from run import _process_tick, _validate_live_config, main, parse_args
+from run import _place_live_order_if_enabled, _process_tick, _validate_live_config, main, parse_args
 
 
 class BuyStrategyStub:
@@ -75,6 +76,15 @@ class RunGuardTest(unittest.TestCase):
         with patch.object(sys, "argv", ["run.py", "--mode", "demo", "--min-trade-cash", "456"]):
             self.assertEqual(parse_args().min_trade_cash, 456.0)
 
+    def test_trade_size_alias_maps_to_trade_size_cash(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.yaml"
+            path.write_text("exchange: binance\nsymbol: ROBOUSDT\ntrade_size: 777\n", encoding="utf-8")
+
+            config = load_config(path)
+
+        self.assertEqual(config["trade_size_cash"], 777)
+
     def test_parse_args_default_mode_is_live(self) -> None:
         with patch.object(sys, "argv", ["run.py"]):
             args = parse_args()
@@ -111,6 +121,14 @@ class RunGuardTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             _validate_live_config({"symbol": "BTC"})
 
+    def test_live_mode_rejects_non_binance_exchange(self) -> None:
+        with self.assertRaises(ValueError):
+            _validate_live_config({"exchange": "coinone", "symbol": "ROBO"})
+
+    def test_live_order_guard_requires_client_when_enabled(self) -> None:
+        with self.assertRaises(RuntimeError):
+            _place_live_order_if_enabled({"live_order_enabled": True, "symbol": "ROBOUSDT"}, None, "BUY", 1.0)
+
 
 def _paths(tmp: str) -> dict[str, str]:
     root = Path(tmp)
@@ -137,8 +155,9 @@ def _config(paths: dict[str, str], *, trade_size_cash: float, min_trade_cash: fl
 
 def _full_config(overrides: dict) -> dict:
     config = {
-        "symbol": "ROBO",
-        "quote_currency": "KRW",
+        "exchange": "binance",
+        "symbol": "ROBOUSDT",
+        "market": "spot",
         "trade_size_cash": 100_000.0,
         "min_trade_cash": 100.0,
         "candle_interval_sec": 60,
