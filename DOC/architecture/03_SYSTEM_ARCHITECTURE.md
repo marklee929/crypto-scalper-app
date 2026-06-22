@@ -56,6 +56,7 @@ product constitution
 - `05_CODEX_HARNESS_GUIDE.md`: Codex 작업 방식, mode, stop gates
 - `06_WORK_AREA_REGISTRY.md`: 작업 영역별 허용/금지 경계
 - `07_HARNESS_RESTRUCTURE_REVIEW.md`: 리뷰 참고 문서, 실행 규칙의 1차 권한자는 아님
+- `08_DATABASE_ARCHITECTURE.md`: PostgreSQL-first 기록/복기/asset tracking/reconciliation 기준
 
 ## Runtime Component Map
 
@@ -191,6 +192,33 @@ product constitution
 - 실행 모드별 산출물 분리가 필요하다.
 - demo/live 상태가 섞이면 위험하다.
 
+### PostgreSQL Storage Layer
+
+- `DOC/architecture/08_DATABASE_ARCHITECTURE.md`
+- future `storage/`
+- future `storage/schema/`
+
+책임:
+
+- runtime_run 기록
+- secret 제외 config snapshot 기록
+- 15m / 30m / 1h / 4h closed candle 기록
+- strategy decision 기록
+- order intent와 execution result 분리 기록
+- ledger snapshot 기록
+- live asset snapshot과 demo fake asset snapshot 분리
+- reconciliation event 기록
+
+주의:
+
+- 현재 코드의 핵심 실행 경로는 아직 DB에 의존하지 않는다.
+- 하네스 기준 DB 아키텍처는 PostgreSQL-first다.
+- PostgreSQL은 전략 판단 엔진이 아니라 기록, 복기, asset tracking, reconciliation 계층이다.
+- `state.json`은 빠른 복구용 hot state이고, PostgreSQL은 장기 이력과 blackbox 기록용이다.
+- DB password, API key, API secret, token 원문은 DB, 문서, 로그, 테스트에 저장하지 않는다.
+- SQLite는 운영 기본 DB로 추가하지 않는다.
+- destructive migration, live asset overwrite, demo fake asset/live asset mixing은 보호영역이다.
+
 ### Tests
 
 - `tests/test_candle_aggregator.py`
@@ -279,6 +307,18 @@ LedgerSnapshot = 장부 상태
 
 `OrderIntent`는 반드시 order guard를 통과해야 한다.
 
+PostgreSQL 기록은 각 계층을 대체하지 않는다. DB 기록은 이미 발생한 입력, 판단, 주문 의도, 실행 결과, 장부 상태를 재현 가능하게 남기는 append 계층이다.
+
+DB record 계층은 다음 책임을 가진다.
+
+```text
+DBRecord = PostgreSQL append 기록
+AssetSnapshot = live asset 또는 demo fake asset 상태
+ReconciliationEvent = 실행/장부/자산 불일치 기록
+```
+
+Demo fake asset과 live asset은 같은 테이블이나 같은 복구 기준으로 섞으면 안 된다.
+
 ## Local LLM Boundary
 
 Local LLM 또는 외부 LLM은 선택적 보조 도구다.
@@ -333,6 +373,14 @@ explicit mode selection
 -> exchange adapter expansion
 ```
 
+PostgreSQL-first target은 다음을 추가한다.
+
+```text
+-> PostgreSQL append records
+-> demo fake asset / live asset separation
+-> reconciliation event and stop state
+```
+
 ## Success Criteria
 
 시스템 경계가 건강하면 다음이 가능하다.
@@ -342,6 +390,10 @@ explicit mode selection
 - live order는 명시적 보호영역으로 남는다
 - API key/secret은 문서와 로그에 노출되지 않는다
 - demo/paper/live 산출물이 섞이지 않는다
+- PostgreSQL 기록과 `state.json`의 역할이 구분된다
+- secret 원문이 DB/config snapshot/log/test에 저장되지 않는다
+- live asset과 demo fake asset이 분리된다
+- order/execution/ledger 불일치가 `RECONCILIATION_REQUIRED`로 드러난다
 - stub 모듈을 실전 신호로 오해하지 않는다
 - 레거시 앱은 참고자료로만 분리된다
 - 테스트가 하네스 변경 후에도 기준선 역할을 한다

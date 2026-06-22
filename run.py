@@ -16,6 +16,7 @@ from core.market_structure import StructureConfig
 from core.state import StateStore
 from paper.ledger import Ledger
 from paper.report import write_hourly_report, write_trade
+from storage.runtime_repository import create_runtime_recorder
 
 
 def demo_price_stream(config: dict, ticks: int | None = None, *, realtime: bool = False):
@@ -72,6 +73,8 @@ def _process_tick(
     timestamp: datetime,
     volume: float = 0.0,
     order_client: Any = None,
+    runtime_metadata: dict[str, Any] | None = None,
+    db_recorder: Any = None,
 ) -> datetime | None:
     update = aggregator.update(price, timestamp, volume)
     action = None
@@ -80,6 +83,14 @@ def _process_tick(
         action = strategy.on_candle(update.closed)
     if decision_evaluated:
         _write_strategy_log(strategy.last_decision, config["strategy_log_path"], timestamp)
+    decision_id = None
+    if decision_evaluated:
+        decision_id = _record_strategy_decision_if_enabled(
+            db_recorder,
+            strategy.last_decision,
+            timestamp,
+        )
+    ledger_snapshot_recorded_with_execution = False
     if action == "BUY":
         trade_cash = min(float(config["trade_size_cash"]), float(ledger.cash))
         min_trade_cash = float(config.get("min_trade_cash", 0.0))
@@ -107,6 +118,17 @@ def _process_tick(
                     timestamp=timestamp.isoformat(),
                 )
                 write_trade(event, config["trades_log_path"])
+                ledger_snapshot_recorded_with_execution = bool(
+                    _record_demo_execution_flow_if_enabled(
+                        db_recorder,
+                        runtime_metadata,
+                        event,
+                        ledger,
+                        price,
+                        timestamp,
+                        decision_id=decision_id,
+                    )
+                )
             except ValueError:
                 pass
     elif action == "SELL" and ledger.position_qty > 0:
@@ -120,6 +142,17 @@ def _process_tick(
                 timestamp=timestamp.isoformat(),
             )
             write_trade(event, config["trades_log_path"])
+            ledger_snapshot_recorded_with_execution = bool(
+                _record_demo_execution_flow_if_enabled(
+                    db_recorder,
+                    runtime_metadata,
+                    event,
+                    ledger,
+                    price,
+                    timestamp,
+                    decision_id=decision_id,
+                )
+            )
         except ValueError:
             pass
 
@@ -131,11 +164,21 @@ def _process_tick(
         )
         last_report_at = timestamp
 
+    if decision_evaluated and not ledger_snapshot_recorded_with_execution:
+        _record_ledger_snapshot_if_enabled(
+            db_recorder,
+            ledger,
+            price,
+            timestamp,
+            decision_id=decision_id,
+        )
+
     state_store.save(
         {
             "ledger": ledger.snapshot(),
             "strategy": strategy.snapshot(),
             "last_report_at": last_report_at.isoformat() if last_report_at else None,
+            "runtime": runtime_metadata or {},
         }
     )
     return last_report_at
@@ -147,6 +190,77 @@ def _place_live_order_if_enabled(config: dict, order_client: Any, side: str, qty
     if order_client is None:
         raise RuntimeError("live_order_enabled requires a configured BinanceRestClient.")
     order_client.place_market_order(str(config["symbol"]), side, qty)
+
+
+def _record_strategy_decision_if_enabled(
+    db_recorder: Any,
+    decision: dict,
+    timestamp: datetime,
+) -> Any:
+    if db_recorder is None or not decision:
+        return None
+    try:
+        return db_recorder.record_strategy_decision(decision, timestamp)
+    except Exception as exc:
+        _print_db_record_warning("strategy_decision", exc)
+        return None
+
+
+def _record_ledger_snapshot_if_enabled(
+    db_recorder: Any,
+    ledger: Ledger,
+    price: float,
+    timestamp: datetime,
+    *,
+    decision_id: Any = None,
+) -> Any:
+    if db_recorder is None:
+        return None
+    try:
+        return db_recorder.record_ledger_snapshot(
+            ledger,
+            price,
+            timestamp,
+            decision_id=decision_id,
+        )
+    except Exception as exc:
+        _print_db_record_warning("ledger_snapshot", exc)
+        return None
+
+
+def _record_demo_execution_flow_if_enabled(
+    db_recorder: Any,
+    runtime_metadata: dict[str, Any] | None,
+    event: Any,
+    ledger: Ledger,
+    price: float,
+    timestamp: datetime,
+    *,
+    decision_id: Any = None,
+) -> Any:
+    if db_recorder is None:
+        return None
+    mode = str((runtime_metadata or {}).get("mode", "")).strip().lower()
+    if mode not in {"demo", "paper", "backtest"}:
+        return None
+    try:
+        return db_recorder.record_demo_execution_flow(
+            event,
+            ledger,
+            price,
+            timestamp,
+            decision_id=decision_id,
+        )
+    except Exception as exc:
+        _print_db_record_warning("demo_fake_execution_flow", exc)
+        return None
+
+
+def _print_db_record_warning(record_type: str, exc: Exception) -> None:
+    print(
+        f"[DB_RECORD_WARNING] record={record_type} error={type(exc).__name__}",
+        flush=True,
+    )
 
 
 def _build_structure_config(config: dict) -> StructureConfig:
@@ -170,7 +284,14 @@ def _write_strategy_log(event: dict, log_path: str, timestamp: datetime) -> None
         handle.write(format_strategy_log(event, timestamp.isoformat()) + "\n")
 
 
-def run_demo(config: dict, ticks: int, *, continuous: bool = False) -> None:
+def run_demo(
+    config: dict,
+    ticks: int,
+    *,
+    continuous: bool = False,
+    runtime_metadata: dict[str, Any] | None = None,
+    db_recorder: Any = None,
+) -> None:
     ledger, strategy, state_store, aggregator, last_report_at = _build_runtime(config)
     closed_candles = 0
     trade_count_before = len(ledger.trades)
@@ -188,7 +309,17 @@ def run_demo(config: dict, ticks: int, *, continuous: bool = False) -> None:
         for timestamp, price, volume in demo_price_stream(config, stream_ticks, realtime=continuous):
             before_decision = dict(strategy.last_decision)
             last_report_at = _process_tick(
-                config, ledger, strategy, state_store, aggregator, last_report_at, price, timestamp, volume
+                config,
+                ledger,
+                strategy,
+                state_store,
+                aggregator,
+                last_report_at,
+                price,
+                timestamp,
+                volume,
+                runtime_metadata=runtime_metadata,
+                db_recorder=db_recorder,
             )
             processed_ticks += 1
             if strategy.last_decision and strategy.last_decision != before_decision:
@@ -248,7 +379,12 @@ def _print_run_summary(
     )
 
 
-async def run_live(config: dict) -> None:
+async def run_live(
+    config: dict,
+    *,
+    runtime_metadata: dict[str, Any] | None = None,
+    db_recorder: Any = None,
+) -> None:
     _validate_live_config(config)
     ledger, strategy, state_store, aggregator, last_report_at = _build_runtime(config)
 
@@ -272,7 +408,18 @@ async def run_live(config: dict) -> None:
         nonlocal last_report_at
         before_decision = dict(strategy.last_decision)
         last_report_at = _process_tick(
-            config, ledger, strategy, state_store, aggregator, last_report_at, price, timestamp, volume, order_client
+            config,
+            ledger,
+            strategy,
+            state_store,
+            aggregator,
+            last_report_at,
+            price,
+            timestamp,
+            volume,
+            order_client,
+            runtime_metadata=runtime_metadata,
+            db_recorder=db_recorder,
         )
         if strategy.last_decision and strategy.last_decision != before_decision:
             _print_live_decision(strategy, ledger, price, timestamp)
@@ -361,12 +508,23 @@ def main() -> None:
     config = load_config(args.config)
     if args.min_trade_cash is not None:
         config["min_trade_cash"] = args.min_trade_cash
+    db_recorder = create_runtime_recorder(config, args.mode)
+    runtime_start = db_recorder.start()
+    runtime_metadata = runtime_start.as_state_metadata()
     if args.mode == "demo":
         ticks = args.ticks if args.ticks is not None else int(config["demo_ticks"])
         _log_runtime_config(config, "demo")
-        run_demo(config, ticks, continuous=bool(args.continuous))
+        run_demo(
+            config,
+            ticks,
+            continuous=bool(args.continuous),
+            runtime_metadata=runtime_metadata,
+            db_recorder=db_recorder,
+        )
     else:
-        asyncio.run(run_live(config))
+        asyncio.run(
+            run_live(config, runtime_metadata=runtime_metadata, db_recorder=db_recorder)
+        )
 
 
 if __name__ == "__main__":

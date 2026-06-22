@@ -15,12 +15,17 @@ local PC
 -> Python runtime
 -> local config.yaml
 -> local state/log files
+-> optional PostgreSQL blackbox records
 -> optional demo stream
 -> Binance WebSocket
 -> optional Binance REST market order
 ```
 
 로컬에서 실행해도 외부 Binance 계정에 영향을 줄 수 있다.
+
+현재 코드의 핵심 실행 경로는 아직 DB에 의존하지 않지만, 하네스 기준 DB 아키텍처는 PostgreSQL-first다.
+
+PostgreSQL은 로컬 실행의 판단 엔진이 아니라 기록, 복기, asset tracking, reconciliation 계층이다. `DATABASE_URL`이 없더라도 demo와 기본 단위 테스트는 깨지지 않아야 한다. 반대로 live order 경로에서 DB 기록 실패를 조용히 성공처럼 숨기면 안 된다.
 
 ## Core Runtime Rule
 
@@ -66,6 +71,8 @@ demo
 ## Configuration Safety
 
 `config.yaml`은 보호 대상이다.
+
+DB 연결 정보도 보호 대상이다. `DATABASE_URL`은 env에 두고, 원문을 문서, 로그, 테스트 출력, config snapshot에 남기지 않는다. DB password를 `config.yaml`에 넣지 않는다.
 
 확인:
 
@@ -244,9 +251,18 @@ identify AREA and MODE
 
 ## DB Safety Rule
 
-현재 README 기준 핵심 DB는 없다.
+현재 코드의 핵심 실행 경로는 아직 DB에 의존하지 않지만, 하네스 기준 DB 아키텍처는 PostgreSQL-first다.
 
-하지만 state/log 파일이 운영 데이터 역할을 한다.
+`state.json`은 빠른 복구용 hot state이고, PostgreSQL은 실행 이력, 판단 근거, 주문/체결/자산 추적, reconciliation 기록용 blackbox다.
+
+로컬 DB 기준:
+
+- local PostgreSQL server를 1차 기준으로 한다.
+- 연결 정보는 `DATABASE_URL` env에 둔다.
+- `DATABASE_URL` 원문과 password는 로그, 문서, 테스트, config snapshot에 출력하지 않는다.
+- DB 연결 실패는 demo에서는 명확한 warning/degraded mode로 처리할 수 있다.
+- live order 경로에서는 DB 실패를 fake success로 숨기지 않는다.
+- SQLite는 운영 기본 DB로 추가하지 않는다.
 
 금지:
 
@@ -254,6 +270,12 @@ identify AREA and MODE
 - 기존 거래 로그 삭제
 - demo/live 로그 섞기
 - 실거래 로그를 테스트 로그로 덮어쓰기
+- `DROP TABLE`, `TRUNCATE`, destructive migration
+- raw secret 또는 raw `DATABASE_URL` 저장
+- SQLite를 운영 기본 DB로 추가
+- live asset snapshot을 demo fake asset 결과로 갱신
+- demo fake asset과 live asset을 같은 복구 기준으로 섞기
+- PostgreSQL 연결 실패를 무시하고 live 주문을 계속 성공처럼 처리
 
 선호:
 
@@ -261,6 +283,10 @@ identify AREA and MODE
 - timestamped backup
 - mode/symbol/exchange suffix
 - read-only inspection first
+- forward-only migration
+- migration SQL forbidden pattern 검사
+- DB disabled mode에서도 demo/test가 깨지지 않는 구조
+- live 주문 전 DB/ledger 불일치가 보이면 `RECONCILIATION_REQUIRED`로 멈추는 구조
 
 ## Scheduler and Loop Safety
 
@@ -303,6 +329,8 @@ Binance REST market order는 실제 외부 영향이다.
 - files modified
 - command run
 - tests/checks run
+- DB touched 여부
+- migration touched 여부
 - external API touched 여부
 - actual order sent 여부
 - protected areas touched 여부
@@ -319,6 +347,11 @@ Binance REST market order는 실제 외부 영향이다.
 - `config.yaml` 수정이 필요하지만 범위가 불명확
 - Binance REST 주문 경로를 건드려야 함
 - state/log 삭제가 필요함
+- destructive migration이 필요함
+- SQLite를 운영 기본 DB로 추가해야 함
+- raw `DATABASE_URL`, API key, API secret 출력이 필요함
+- live asset과 demo fake asset을 섞어야만 구현 가능함
+- DB 오류를 무시해야만 live 주문 흐름이 진행됨
 - 전략 threshold 변경의 손실 영향이 검증되지 않음
 - 테스트가 실패했는데 원인이 다른 AREA임
 - 레거시 앱과 현재 Python 런타임 경계가 불명확

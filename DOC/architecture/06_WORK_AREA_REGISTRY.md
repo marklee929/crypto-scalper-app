@@ -103,6 +103,16 @@ TIMEBOX
 - scheduler/loop 중복 주문 영향
 - 신규 거래소 live order adapter
 
+PostgreSQL protected areas:
+
+- PostgreSQL migration
+- destructive DB migration
+- `DATABASE_URL` raw exposure
+- raw secret DB/config snapshot 저장
+- live asset overwrite
+- demo fake asset / live asset mixing
+- SQLite operational default addition
+
 ## Work Areas
 
 ### AREA: PRODUCT_DOCS
@@ -123,6 +133,45 @@ Allowed: documentation-only clarification.
 Forbidden: runtime code, config secrets, live order, state/log deletion.
 
 Risk: LOW.
+
+### AREA: DATABASE_ARCHITECTURE
+
+Purpose: PostgreSQL-first DB 설계, schema ownership, state/log와 DB 역할 분리.
+
+Allowed files:
+
+```text
+DOC/architecture/03_SYSTEM_ARCHITECTURE.md
+DOC/architecture/04_LOCAL_DEVELOPMENT_RUNTIME_GUIDE.md
+DOC/architecture/05_CODEX_HARNESS_GUIDE.md
+DOC/architecture/06_WORK_AREA_REGISTRY.md
+DOC/architecture/08_DATABASE_ARCHITECTURE.md
+```
+
+Allowed:
+
+- DOC_ONLY schema/design clarification
+- PostgreSQL-first boundary documentation
+- state/log vs PostgreSQL role clarification
+- CODE_TASK_CANDIDATE 작성
+
+Forbidden:
+
+- runtime code
+- actual DB connection
+- migration execution
+- config/env/secrets 변경
+- live order
+- SQLite operational default 추가
+
+Required checks:
+
+- PostgreSQL-first 유지
+- SQLite 운영 기본 DB 금지 유지
+- secret 원문 저장 금지 유지
+- demo fake asset과 live asset 분리 유지
+
+Risk: LOW for docs, MEDIUM-HIGH if implementation starts.
 
 ### AREA: SYSTEM_ARCHITECTURE_DOCS
 
@@ -458,6 +507,97 @@ Required checks:
 
 Risk: LOW-MEDIUM.
 
+### AREA: POSTGRES_STORAGE
+
+Purpose: PostgreSQL connection, redaction, repository, append 기록 foundation.
+
+Allowed:
+
+- `storage/` package
+- `storage/postgres.py`
+- `storage/migrations.py`
+- `storage/schema/`
+- DB disabled mode
+- `DATABASE_URL` env loader with redaction
+- no-network/unit-testable helpers
+
+Forbidden:
+
+- raw `DATABASE_URL` 출력
+- API key/secret DB 저장
+- live order behavior 변경
+- Binance REST payload 변경
+- DB 오류를 fake success로 숨김
+- SQLite operational default 추가
+
+Required checks:
+
+- no raw secret in modified files
+- DB 없이 import/test 가능
+- actual DB 접속은 opt-in
+- external API touched: NO
+- actual order sent: NO
+
+Risk: MEDIUM.
+
+### AREA: DB_MIGRATION
+
+Purpose: forward-only PostgreSQL migration, schema history, destructive SQL 방지.
+
+Allowed:
+
+- migration SQL 작성
+- migration list/dry-run helper
+- `scalper.schema_migration`
+- migration forbidden pattern tests
+
+Forbidden:
+
+- `DROP TABLE`
+- `TRUNCATE`
+- destructive `ALTER`
+- migration 자동 실행 without explicit command
+- SQLite migration path를 운영 기본으로 추가
+- raw secret field 추가
+
+Required checks:
+
+- migration SQL에 forbidden SQL 없음
+- schema history table 존재
+- rollback 대신 forward-only correction plan
+- no actual DB touched unless explicitly approved
+
+Risk: MEDIUM-HIGH.
+
+### AREA: ASSET_TRACKING
+
+Purpose: live asset snapshot, demo fake asset snapshot, ledger reconciliation 경계.
+
+Allowed:
+
+- DOC_ONLY design
+- demo fake asset helper
+- live asset read/write path audit
+- reconciliation event design
+- mock-only tests
+
+Forbidden without explicit approval:
+
+- actual account balance 조회
+- live asset을 demo 결과로 갱신
+- demo fake asset을 live restore 기준으로 사용
+- Binance account/order external API 호출
+- API key/secret handling 변경
+
+Required checks:
+
+- live asset과 demo fake asset table/path 분리
+- external API touched: NO unless explicitly approved
+- actual order sent: NO
+- `RECONCILIATION_REQUIRED` propagation 설계
+
+Risk: HIGH if live, MEDIUM if doc/mock/demo-only.
+
 ### AREA: TESTS
 
 Purpose: 현재 동작 기준선과 하네스 회귀 방지.
@@ -682,6 +822,34 @@ Verification:
 - no raw secret in modified files
 
 ## Future Audit Targets
+
+### CODE_TASK_CANDIDATE
+
+```text
+AREA: POSTGRES_STORAGE + DB_MIGRATION + TESTS
+MODE: GUARDED_FIX
+PURPOSE FUNCTION:
+PostgreSQL connection/redaction/migration foundation을 추가하되 live order 경로에는 연결하지 않는다.
+TIMEBOX: 90m
+STOP CONDITIONS:
+raw secret 출력, actual DB migration 실행, SQLite 운영 기본 DB 도입, Binance REST 변경.
+```
+
+Risk: MEDIUM.
+
+### CODE_TASK_CANDIDATE
+
+```text
+AREA: ASSET_TRACKING + ORDER_GUARD + POSTGRES_STORAGE
+MODE: READ_ONLY_AUDIT
+PURPOSE FUNCTION:
+live asset snapshot과 demo fake asset snapshot 분리, RECONCILIATION_REQUIRED 전파 경로를 설계한다.
+TIMEBOX: 60m
+STOP CONDITIONS:
+actual account API 호출, secret 필요, live order path 수정.
+```
+
+Risk: HIGH if live, MEDIUM if audit only.
 
 ### CODE_TASK_CANDIDATE
 

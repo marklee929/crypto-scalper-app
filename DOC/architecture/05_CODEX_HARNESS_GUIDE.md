@@ -152,6 +152,9 @@ Allowed with pre-review and verification:
 - non-live order guard improvement
 - parser robustness
 - state metadata addition
+- PostgreSQL foundation without live order connection
+- forward-only migration scaffolding
+- DB recorder disabled-mode behavior
 - tests
 - dry-run/paper 분리 로직
 
@@ -179,6 +182,16 @@ Protected examples:
 - destructive state/log migration
 - strategy hard exit 약화
 - scheduler/loop가 중복 주문에 영향을 주는 변경
+
+PostgreSQL protected examples:
+
+- PostgreSQL migration
+- destructive DB migration
+- `DATABASE_URL` handling
+- live asset overwrite
+- demo fake asset / live asset mixing
+- raw secret DB/config snapshot 저장
+- SQLite operational default addition
 
 ## Quick Pre-Review Gate
 
@@ -241,6 +254,12 @@ Stop if:
 - strategy hard exit weakened
 - order size changed
 - Binance REST behavior changed
+- DB migration touched
+- `DATABASE_URL` exposure risk
+- live asset overwrite risk
+- fake/live asset mixing risk
+- PostgreSQL failure hidden as success
+- SQLite proposed as operational default
 - closed candle boundary broken
 - state/log destructive operation
 - legacy app boundary unclear
@@ -309,6 +328,8 @@ config / mode selection
 -> order guard
 -> execution
 -> ledger update
+-> PostgreSQL append record
+-> asset snapshot / reconciliation event
 -> state snapshot
 -> logging/reporting
 -> tests
@@ -323,6 +344,10 @@ config / mode selection
 - live 위험을 로그 문구로만 숨김
 - WebSocket 중복을 strategy 문제로 오해
 - test 실패를 삭제로 해결
+
+- DB insert 실패를 성공처럼 숨김
+- demo fake asset을 live asset snapshot에 기록
+- SQLite를 운영 기본 DB로 우회 도입
 
 ## Multi-Responsibility File Boundary Rule
 
@@ -413,7 +438,8 @@ WorkConnect 전용 명령은 이 프로젝트에서 사용하지 않는다.
 - 오늘 KST 기준 execute prompt를 읽는다
 - completion marker는 `[SCALPER_EXECUTION_COMPLETE]`를 사용한다
 - marker는 정확히 1개만 존재해야 한다
-- marker 위는 완료 이력, 아래는 pending queue다
+- marker는 execute prompt 문서의 맨 마지막 줄에 둔다
+- 완료 보고서, audit 결과, pending queue가 있으면 모두 marker 위에 둔다
 - 보호영역은 명시적 승인 없이 실행하지 않는다
 - 실행 결과는 `DOC/walkthrough/execution-history/YYYY-MM-DD/`에 저장한다
 
@@ -430,7 +456,8 @@ Rules:
 - 정확히 한 줄에 단독으로 존재
 - 정확히 1개만 존재
 - 예시에는 `[COMPLETION_MARKER_EXAMPLE_DO_NOT_COPY]` 사용
-- 파일 끝 boundary에 위치
+- execute prompt 문서 맨 마지막에 위치
+- 완료한 phase 보고서뿐 아니라 확인한 audit/pending section 아래에 위치
 - marker 상태가 애매하면 stop report
 
 ## Stop Report Format
@@ -501,6 +528,8 @@ Verification plan:
 - files modified
 - tests/checks run
 - command run
+- DB touched 여부
+- migration touched 여부
 - external API touched 여부
 - actual order sent 여부
 - protected areas touched 여부

@@ -4,6 +4,8 @@ Status:
 
 이 문서는 리뷰 참고 문서다. 활성 실행 규칙은 `DOC/architecture/00` through `DOC/architecture/06`에 있다.
 
+PostgreSQL-first DB 기준은 `DOC/architecture/08_DATABASE_ARCHITECTURE.md`에 추가되었으며, 2026-06-22 Phase 1 이후 active harness 문서 세트에 연결된다.
+
 ## Purpose
 
 이 리뷰는 기존 WorkConnect용 하네스 문서 세트를 `heart_beat_coin_scalper` 프로젝트에 맞게 바꾼 결과와 남은 보강 지점을 정리한다.
@@ -129,7 +131,7 @@ README 기준 현재 프로젝트는 다음 구조다.
 핵심 변화:
 
 - local server/public posting risk를 local Python/live order risk로 대체
-- DB safety를 state/log safety로 대체
+- DB safety를 처음에는 state/log safety로 축소했으나, PostgreSQL-first 기준 추가 이후 DB safety를 PostgreSQL migration, `DATABASE_URL`, state/log 역할 분리, reconciliation 안전 규칙으로 다시 확장해야 한다.
 
 ### `05_CODEX_HARNESS_GUIDE.md`
 
@@ -190,6 +192,20 @@ strategy hard exit
 state/log destructive operation
 exchange adapter live path
 ```
+
+PostgreSQL-first 추가 이후 현재 Scalper 하네스의 DB 보호영역:
+
+```text
+PostgreSQL migration
+DATABASE_URL raw exposure
+live asset overwrite
+demo fake asset / live asset mixing
+destructive DB migration
+SQLite operational default addition
+raw secret DB/config snapshot
+```
+
+DB migration은 더 이상 WorkConnect 잔재로만 취급하지 않는다. 현재 프로젝트에서는 PostgreSQL-first 기록 계층을 위한 active AREA가 될 수 있지만, destructive migration과 secret 저장 위험 때문에 `DB_MIGRATION` 보호 경계 안에서만 다룬다.
 
 ## 5. Remaining Ambiguities to Preserve
 
@@ -266,9 +282,55 @@ Coinone API 기준은 `2.1`로 두되, 현재 Binance 경로에 섞지 않는다
 
 즉시 삭제나 rewrite가 아니라 metadata audit부터 필요하다.
 
+### PostgreSQL-First Storage Ownership
+
+`08_DATABASE_ARCHITECTURE.md`는 PostgreSQL을 1차 DB로 정의한다.
+
+핵심 방향:
+
+- DB는 전략 판단 엔진이 아니라 runtime blackbox다.
+- `state.json`은 hot state이고 PostgreSQL은 장기 이력과 복기용이다.
+- `DATABASE_URL`은 env에 두며 원문을 출력하지 않는다.
+- SQLite는 운영 기본 DB로 추가하지 않는다.
+- live asset과 demo fake asset은 분리한다.
+- live 주문 성공 후 ledger/DB 불일치는 `RECONCILIATION_REQUIRED`로 드러나야 한다.
+
+남은 보강점:
+
+- 03/04/05/06 문서에 `08_DATABASE_ARCHITECTURE.md`를 active control map으로 연결
+- `DATABASE_ARCHITECTURE`, `POSTGRES_STORAGE`, `DB_MIGRATION`, `ASSET_TRACKING` AREA 등록
+- migration과 DB recorder는 live order path와 분리해 단계적으로 추가
+- SQLite 일반론은 unit test fixture나 임시 offline replay 후보로만 제한
+
 ## 6. Recommended First Codex Tasks
 
 ### CODE_TASK_CANDIDATE 1
+
+```text
+AREA: SYSTEM_ARCHITECTURE_DOCS + CODEX_HARNESS_DOCS + DATABASE_ARCHITECTURE
+MODE: DOC_ONLY
+PURPOSE FUNCTION:
+08_DATABASE_ARCHITECTURE.md를 active harness 문서 세트에 연결하고 PostgreSQL-first 기준을 03/04/05/06에 반영한다.
+FOCUS:
+PostgreSQL-first, DATABASE_URL env protection, migration safety, demo fake asset/live asset separation, SQLite operational default ban.
+STOP CONDITIONS:
+runtime code, DB 접속, config.yaml secret 수정, live order.
+```
+
+### CODE_TASK_CANDIDATE 2
+
+```text
+AREA: POSTGRES_STORAGE + DB_MIGRATION + CONFIG_AND_SECRETS + TESTS
+MODE: GUARDED_FIX
+PURPOSE FUNCTION:
+PostgreSQL foundation과 forward-only migration scaffold를 추가하되 live order 경로에는 연결하지 않는다.
+FOCUS:
+storage package, psycopg v3 candidate, DATABASE_URL redaction, scalper schema migration SQL, no-DB unit tests.
+STOP CONDITIONS:
+raw secret 출력, actual DB migration 실행, DROP/TRUNCATE, SQLite 운영 기본 DB 도입, Binance REST 변경.
+```
+
+### CODE_TASK_CANDIDATE 3
 
 ```text
 AREA: RUNTIME_ENTRYPOINT + ORDER_GUARD
@@ -281,7 +343,7 @@ STOP CONDITIONS:
 실제 주문 실행 금지, config secret 출력 금지.
 ```
 
-### CODE_TASK_CANDIDATE 2
+### CODE_TASK_CANDIDATE 4
 
 ```text
 AREA: CONFIG_AND_SECRETS
@@ -294,7 +356,7 @@ STOP CONDITIONS:
 raw secret 노출 위험이 있으면 즉시 중단.
 ```
 
-### CODE_TASK_CANDIDATE 3
+### CODE_TASK_CANDIDATE 5
 
 ```text
 AREA: DATA_STREAM_BINANCE_WS + CANDLE_AGGREGATOR
@@ -307,7 +369,7 @@ STOP CONDITIONS:
 Binance REST 주문 경로 접근 금지.
 ```
 
-### CODE_TASK_CANDIDATE 4
+### CODE_TASK_CANDIDATE 6
 
 ```text
 AREA: STATE_RECOVERY
@@ -320,7 +382,7 @@ STOP CONDITIONS:
 state 삭제 또는 rewrite 금지.
 ```
 
-### CODE_TASK_CANDIDATE 5
+### CODE_TASK_CANDIDATE 7
 
 ```text
 AREA: TESTS
@@ -333,7 +395,7 @@ STOP CONDITIONS:
 실제 API key, Binance REST order call, live config 사용 금지.
 ```
 
-### CODE_TASK_CANDIDATE 6
+### CODE_TASK_CANDIDATE 8
 
 ```text
 AREA: STRATEGY_ARCHETYPE + MARKET_STRUCTURE_STRATEGY
