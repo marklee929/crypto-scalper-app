@@ -4,7 +4,7 @@ setlocal
 cd /d "%~dp0"
 
 if "%~1"=="" (
-    set RUN_ARGS=--mode demo --demo-profile pump --ticks 240
+    set RUN_ARGS=--mode demo --demo-profile pump --ticks 240 --output-dir .runtime\demo-pump
 ) else (
     set RUN_ARGS=%*
 )
@@ -12,6 +12,7 @@ if "%~1"=="" (
 echo [BAT] Starting Heart Beat Coin Scalper...
 echo [BAT] Working directory: %CD%
 echo [BAT] Safe default: demo pump log. Use --live only for live runtime.
+echo [BAT] Default output: .runtime\demo-pump
 echo [BAT] Command: python "%~dp0run.py" %RUN_ARGS%
 echo.
 
