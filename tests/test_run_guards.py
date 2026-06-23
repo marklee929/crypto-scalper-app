@@ -12,6 +12,7 @@ from core.config import load_config
 from core.state import StateStore
 from paper.ledger import Ledger
 from run import (
+    _apply_output_dir,
     _place_live_order_if_enabled,
     _process_tick,
     _resolve_runtime_mode,
@@ -101,6 +102,21 @@ class RunGuardTest(unittest.TestCase):
         self.assertFalse(args.live)
         self.assertEqual(_resolve_runtime_mode(args), "demo")
         self.assertFalse(hasattr(args, "once"))
+
+    def test_output_dir_overrides_state_and_log_paths(self) -> None:
+        config = {
+            "state_path": "state.json",
+            "strategy_log_path": "strategy.log",
+            "trades_log_path": "trades.log",
+            "hourly_report_path": "hourly_report.log",
+        }
+
+        _apply_output_dir(config, ".runtime/demo-pump")
+
+        self.assertEqual(config["state_path"], str(Path(".runtime/demo-pump") / "state.json"))
+        self.assertEqual(config["strategy_log_path"], str(Path(".runtime/demo-pump") / "strategy.log"))
+        self.assertEqual(config["trades_log_path"], str(Path(".runtime/demo-pump") / "trades.log"))
+        self.assertEqual(config["hourly_report_path"], str(Path(".runtime/demo-pump") / "hourly_report.log"))
 
     def test_mode_live_without_live_flag_is_rejected(self) -> None:
         with patch.object(sys, "argv", ["run.py", "--mode", "live"]):
@@ -215,6 +231,8 @@ def _full_config(overrides: dict) -> dict:
         "candle_interval_sec": 60,
         "state_path": "state.json",
         "strategy_log_path": "strategy.log",
+        "trades_log_path": "trades.log",
+        "hourly_report_path": "hourly_report.log",
         "demo_ticks": 720,
     }
     config.update(overrides)
