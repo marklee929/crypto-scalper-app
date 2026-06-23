@@ -11,7 +11,15 @@ from core.candle_aggregator import CandleAggregator
 from core.config import load_config
 from core.state import StateStore
 from paper.ledger import Ledger
-from run import _place_live_order_if_enabled, _process_tick, _validate_live_config, main, parse_args
+from run import (
+    _apply_output_dir,
+    _place_live_order_if_enabled,
+    _process_tick,
+    _resolve_runtime_mode,
+    _validate_live_config,
+    main,
+    parse_args,
+)
 
 
 class BuyStrategyStub:
@@ -85,17 +93,49 @@ class RunGuardTest(unittest.TestCase):
 
         self.assertEqual(config["trade_size_cash"], 777)
 
-    def test_parse_args_default_mode_is_live(self) -> None:
+    def test_parse_args_default_mode_is_safe_demo(self) -> None:
         with patch.object(sys, "argv", ["run.py"]):
             args = parse_args()
 
-        self.assertEqual(args.mode, "live")
+        self.assertEqual(args.mode, "demo")
+        self.assertEqual(args.demo_profile, "pump")
+        self.assertFalse(args.live)
+        self.assertEqual(_resolve_runtime_mode(args), "demo")
         self.assertFalse(hasattr(args, "once"))
+
+    def test_output_dir_overrides_state_and_log_paths(self) -> None:
+        config = {
+            "state_path": "state.json",
+            "strategy_log_path": "strategy.log",
+            "trades_log_path": "trades.log",
+            "hourly_report_path": "hourly_report.log",
+        }
+
+        _apply_output_dir(config, ".runtime/demo-pump")
+
+        self.assertEqual(config["state_path"], str(Path(".runtime/demo-pump") / "state.json"))
+        self.assertEqual(config["strategy_log_path"], str(Path(".runtime/demo-pump") / "strategy.log"))
+        self.assertEqual(config["trades_log_path"], str(Path(".runtime/demo-pump") / "trades.log"))
+        self.assertEqual(config["hourly_report_path"], str(Path(".runtime/demo-pump") / "hourly_report.log"))
+
+    def test_mode_live_without_live_flag_is_rejected(self) -> None:
+        with patch.object(sys, "argv", ["run.py", "--mode", "live"]):
+            args = parse_args()
+        with self.assertRaises(SystemExit):
+            _resolve_runtime_mode(args)
+
+    def test_live_flag_explicitly_selects_live_runtime(self) -> None:
+        with patch.object(sys, "argv", ["run.py", "--live"]):
+            args = parse_args()
+
+        self.assertTrue(args.live)
+        self.assertEqual(_resolve_runtime_mode(args), "live")
 
     def test_demo_mode_defaults_to_finite_run(self) -> None:
         with (
             patch.object(sys, "argv", ["run.py", "--mode", "demo", "--ticks", "120"]),
             patch("run.load_config", return_value=_full_config({})),
+            patch("run.create_runtime_recorder", return_value=DisabledRecorderStub()),
             patch("run._log_runtime_config"),
             patch("run.run_demo") as run_demo,
         ):
@@ -109,6 +149,7 @@ class RunGuardTest(unittest.TestCase):
         with (
             patch.object(sys, "argv", ["run.py", "--mode", "demo", "--ticks", "120", "--continuous"]),
             patch("run.load_config", return_value=_full_config({})),
+            patch("run.create_runtime_recorder", return_value=DisabledRecorderStub()),
             patch("run._log_runtime_config"),
             patch("run.run_demo") as run_demo,
         ):
@@ -116,6 +157,17 @@ class RunGuardTest(unittest.TestCase):
 
         run_demo.assert_called_once()
         self.assertTrue(run_demo.call_args.kwargs["continuous"])
+
+    def test_live_flag_routes_to_live_runner(self) -> None:
+        with (
+            patch.object(sys, "argv", ["run.py", "--live"]),
+            patch("run.load_config", return_value=_full_config({})),
+            patch("run.create_runtime_recorder", return_value=DisabledRecorderStub()),
+            patch("run.asyncio.run") as asyncio_run,
+        ):
+            main()
+
+        asyncio_run.assert_called_once()
 
     def test_live_mode_rejects_btc_fallback_symbol(self) -> None:
         with self.assertRaises(ValueError):
@@ -128,6 +180,22 @@ class RunGuardTest(unittest.TestCase):
     def test_live_order_guard_requires_client_when_enabled(self) -> None:
         with self.assertRaises(RuntimeError):
             _place_live_order_if_enabled({"live_order_enabled": True, "symbol": "ROBOUSDT"}, None, "BUY", 1.0)
+
+
+class RuntimeStartStub:
+    def as_state_metadata(self) -> dict:
+        return {
+            "run_id": None,
+            "mode": "demo",
+            "exchange": "binance",
+            "symbol": "ROBOUSDT",
+            "db_enabled": False,
+        }
+
+
+class DisabledRecorderStub:
+    def start(self) -> RuntimeStartStub:
+        return RuntimeStartStub()
 
 
 def _paths(tmp: str) -> dict[str, str]:
@@ -163,6 +231,8 @@ def _full_config(overrides: dict) -> dict:
         "candle_interval_sec": 60,
         "state_path": "state.json",
         "strategy_log_path": "strategy.log",
+        "trades_log_path": "trades.log",
+        "hourly_report_path": "hourly_report.log",
         "demo_ticks": 720,
     }
     config.update(overrides)
