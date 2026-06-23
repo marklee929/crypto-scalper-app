@@ -19,7 +19,18 @@ from paper.report import write_hourly_report, write_trade
 from storage.runtime_repository import create_runtime_recorder
 
 
-def demo_price_stream(config: dict, ticks: int | None = None, *, realtime: bool = False):
+def demo_price_stream(
+    config: dict,
+    ticks: int | None = None,
+    *,
+    realtime: bool = False,
+    profile: str | None = None,
+):
+    profile_name = str(profile or config.get("demo_profile") or "random").strip().lower()
+    if profile_name == "pump":
+        yield from demo_pump_price_stream(config, ticks, realtime=realtime)
+        return
+
     rng = random.Random(config["demo_seed"])
     price = float(config["demo_price_start"])
     interval = int(config["demo_interval_sec"])
@@ -28,6 +39,44 @@ def demo_price_stream(config: dict, ticks: int | None = None, *, realtime: bool 
     while ticks is None or emitted < ticks:
         yield now, price, 1.0
         shock = rng.uniform(-config["demo_price_volatility"], config["demo_price_volatility"])
+        price = max(0.01, price * (1 + shock))
+        now = now + timedelta(seconds=interval)
+        emitted += 1
+        if realtime:
+            time.sleep(max(0, interval))
+
+
+def demo_pump_price_stream(config: dict, ticks: int | None = None, *, realtime: bool = False):
+    """Deterministic synthetic pump stream for safe logging checks.
+
+    This is not a profitability simulation. It exists so the safe default BAT path
+    can generate visible candle/decision/log activity without touching live order
+    execution. The pattern dips first, bases, then rises with increasing synthetic
+    volume, and later cools down.
+    """
+    price = float(config["demo_price_start"])
+    interval = int(config["demo_interval_sec"])
+    now = datetime.now(UTC).replace(tzinfo=None)
+    emitted = 0
+    while ticks is None or emitted < ticks:
+        phase = emitted % 144
+        if phase < 24:
+            shock = -0.0012
+            volume = 1.0
+        elif phase < 48:
+            shock = 0.0001
+            volume = 0.8
+        elif phase < 96:
+            shock = 0.0010 + min(phase - 48, 24) * 0.000015
+            volume = 1.2 + (phase - 48) * 0.035
+        elif phase < 120:
+            shock = 0.00035
+            volume = 2.0
+        else:
+            shock = -0.00045
+            volume = 1.4
+
+        yield now, price, volume
         price = max(0.01, price * (1 + shock))
         now = now + timedelta(seconds=interval)
         emitted += 1
@@ -295,9 +344,10 @@ def run_demo(
     ledger, strategy, state_store, aggregator, last_report_at = _build_runtime(config)
     closed_candles = 0
     trade_count_before = len(ledger.trades)
+    demo_profile = str(config.get("demo_profile") or "random")
 
     print(
-        f"[RUN] mode=demo symbol={config.get('symbol')} ticks={ticks} "
+        f"[RUN] mode=demo profile={demo_profile} symbol={config.get('symbol')} ticks={ticks} "
         f"continuous={continuous} "
         f"candle_interval_sec={config.get('candle_interval_sec')} "
         f"min_trade_cash={config.get('min_trade_cash')}"
@@ -306,7 +356,12 @@ def run_demo(
     processed_ticks = 0
     try:
         stream_ticks = None if continuous else ticks
-        for timestamp, price, volume in demo_price_stream(config, stream_ticks, realtime=continuous):
+        for timestamp, price, volume in demo_price_stream(
+            config,
+            stream_ticks,
+            realtime=continuous,
+            profile=demo_profile,
+        ):
             before_decision = dict(strategy.last_decision)
             last_report_at = _process_tick(
                 config,
@@ -485,7 +540,23 @@ def _print_live_decision(strategy: HeartbeatStrategy, ledger: Ledger, price: flo
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Heart Beat Coin Scalper.")
     parser.add_argument("--config", default="config.yaml")
-    parser.add_argument("--mode", choices=["demo", "live"], default="live")
+    parser.add_argument(
+        "--mode",
+        choices=["demo", "live"],
+        default="demo",
+        help="Runtime mode. live mode still requires --live as an explicit confirmation.",
+    )
+    parser.add_argument(
+        "--live",
+        action="store_true",
+        help="Explicitly enable live runtime. Without this flag, execution stays in safe demo mode.",
+    )
+    parser.add_argument(
+        "--demo-profile",
+        choices=["random", "pump"],
+        default="pump",
+        help="Synthetic demo stream profile used outside --live.",
+    )
     parser.add_argument("--ticks", type=int, default=None)
     parser.add_argument(
         "--continuous",
@@ -503,15 +574,25 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _resolve_runtime_mode(args: argparse.Namespace) -> str:
+    if bool(getattr(args, "live", False)):
+        return "live"
+    if getattr(args, "mode", "demo") == "live":
+        raise SystemExit("live mode is protected. Use --live to enable live runtime explicitly.")
+    return "demo"
+
+
 def main() -> None:
     args = parse_args()
+    mode = _resolve_runtime_mode(args)
     config = load_config(args.config)
+    config["demo_profile"] = args.demo_profile
     if args.min_trade_cash is not None:
         config["min_trade_cash"] = args.min_trade_cash
-    db_recorder = create_runtime_recorder(config, args.mode)
+    db_recorder = create_runtime_recorder(config, mode)
     runtime_start = db_recorder.start()
     runtime_metadata = runtime_start.as_state_metadata()
-    if args.mode == "demo":
+    if mode == "demo":
         ticks = args.ticks if args.ticks is not None else int(config["demo_ticks"])
         _log_runtime_config(config, "demo")
         run_demo(
