@@ -522,6 +522,16 @@ def _log_runtime_config(config: dict, mode: str) -> None:
     )
 
 
+def _apply_output_dir(config: dict, output_dir: str | None) -> None:
+    if not output_dir:
+        return
+    root = Path(output_dir)
+    config["state_path"] = str(root / "state.json")
+    config["strategy_log_path"] = str(root / "strategy.log")
+    config["trades_log_path"] = str(root / "trades.log")
+    config["hourly_report_path"] = str(root / "hourly_report.log")
+
+
 def _print_live_decision(strategy: HeartbeatStrategy, ledger: Ledger, price: float, timestamp: datetime) -> None:
     decision = strategy.last_decision or {}
     score = decision.get("score") or {}
@@ -557,6 +567,11 @@ def parse_args() -> argparse.Namespace:
         default="pump",
         help="Synthetic demo stream profile used outside --live.",
     )
+    parser.add_argument(
+        "--output-dir",
+        default=None,
+        help="Override state/log output directory for this run.",
+    )
     parser.add_argument("--ticks", type=int, default=None)
     parser.add_argument(
         "--continuous",
@@ -587,6 +602,7 @@ def main() -> None:
     mode = _resolve_runtime_mode(args)
     config = load_config(args.config)
     config["demo_profile"] = args.demo_profile
+    _apply_output_dir(config, args.output_dir)
     if args.min_trade_cash is not None:
         config["min_trade_cash"] = args.min_trade_cash
     db_recorder = create_runtime_recorder(config, mode)
