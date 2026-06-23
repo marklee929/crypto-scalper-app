@@ -2,8 +2,4 @@
 __pycache__/
 *.log
 state.json
-
-# never commit ssh files
-**/.ssh/
-*known_hosts*
-
+.runtime/
