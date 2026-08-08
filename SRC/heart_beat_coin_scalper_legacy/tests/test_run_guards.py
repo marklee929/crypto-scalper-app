@@ -5,7 +5,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from core.candle_aggregator import CandleAggregator
 from core.config import load_config
@@ -13,6 +13,7 @@ from core.state import StateStore
 from paper.ledger import Ledger
 from run import (
     _apply_output_dir,
+    _apply_runtime_mode_safety,
     _place_live_order_if_enabled,
     _process_tick,
     _resolve_runtime_mode,
@@ -44,6 +45,14 @@ class BuyStrategyStub:
 
     def snapshot(self) -> dict:
         return {"state": "IDLE"}
+
+
+class OrderClientStub:
+    def __init__(self) -> None:
+        self.orders: list[tuple[str, str, float]] = []
+
+    def place_market_order(self, symbol: str, side: str, qty: float) -> None:
+        self.orders.append((symbol, side, qty))
 
 
 class RunGuardTest(unittest.TestCase):
@@ -163,11 +172,40 @@ class RunGuardTest(unittest.TestCase):
             patch.object(sys, "argv", ["run.py", "--live"]),
             patch("run.load_config", return_value=_full_config({})),
             patch("run.create_runtime_recorder", return_value=DisabledRecorderStub()),
+            patch("run.run_live", new=Mock(return_value="live-coroutine")) as run_live,
             patch("run.asyncio.run") as asyncio_run,
         ):
             main()
 
+        run_live.assert_called_once()
         asyncio_run.assert_called_once()
+
+    def test_demo_mode_overrides_live_order_enabled_true(self) -> None:
+        config = {"live_order_enabled": True}
+
+        _apply_runtime_mode_safety(config, "demo")
+
+        self.assertFalse(config["live_order_enabled"])
+
+    def test_live_mode_preserves_live_order_enabled(self) -> None:
+        config = {"live_order_enabled": True}
+
+        _apply_runtime_mode_safety(config, "live")
+
+        self.assertTrue(config["live_order_enabled"])
+
+    def test_main_demo_passes_live_order_disabled_config(self) -> None:
+        with (
+            patch.object(sys, "argv", ["run.py", "--mode", "demo", "--ticks", "120"]),
+            patch("run.load_config", return_value=_full_config({"live_order_enabled": True})),
+            patch("run.create_runtime_recorder", return_value=DisabledRecorderStub()),
+            patch("run._log_runtime_config"),
+            patch("run.run_demo") as run_demo,
+        ):
+            main()
+
+        run_demo.assert_called_once()
+        self.assertFalse(run_demo.call_args.args[0]["live_order_enabled"])
 
     def test_live_mode_rejects_btc_fallback_symbol(self) -> None:
         with self.assertRaises(ValueError):
@@ -179,7 +217,67 @@ class RunGuardTest(unittest.TestCase):
 
     def test_live_order_guard_requires_client_when_enabled(self) -> None:
         with self.assertRaises(RuntimeError):
-            _place_live_order_if_enabled({"live_order_enabled": True, "symbol": "ROBOUSDT"}, None, "BUY", 1.0)
+            _place_live_order_if_enabled(
+                {"live_order_enabled": True, "symbol": "ROBOUSDT"},
+                None,
+                "BUY",
+                1.0,
+                mode="live",
+            )
+
+    def test_live_order_guard_ignores_enabled_flag_outside_live_runtime(self) -> None:
+        order_client = OrderClientStub()
+
+        _place_live_order_if_enabled(
+            {"live_order_enabled": True, "symbol": "ROBOUSDT"},
+            order_client,
+            "BUY",
+            1.0,
+            mode="demo",
+        )
+
+        self.assertEqual(order_client.orders, [])
+
+    def test_demo_tick_with_live_order_enabled_does_not_require_order_client(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _paths(tmp)
+            ledger = Ledger(1_000.0)
+            strategy = BuyStrategyStub()
+            aggregator = CandleAggregator(interval_sec=60)
+            config = {
+                **_config(paths, trade_size_cash=100.0, min_trade_cash=1.0),
+                "live_order_enabled": True,
+                "symbol": "ROBOUSDT",
+            }
+            runtime_metadata = {"mode": "demo", "symbol": "ROBOUSDT"}
+            start = datetime(2026, 6, 23, 10, 0, 0)
+
+            _process_tick(
+                config,
+                ledger,
+                strategy,
+                StateStore(paths["state"]),
+                aggregator,
+                None,
+                100.0,
+                start,
+                1.0,
+                runtime_metadata=runtime_metadata,
+            )
+            _process_tick(
+                config,
+                ledger,
+                strategy,
+                StateStore(paths["state"]),
+                aggregator,
+                None,
+                100.0,
+                start + timedelta(seconds=60),
+                1.0,
+                runtime_metadata=runtime_metadata,
+            )
+
+        self.assertGreater(ledger.position_qty, 0.0)
 
 
 class RuntimeStartStub:

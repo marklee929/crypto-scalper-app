@@ -158,7 +158,13 @@ def _process_tick(
         else:
             qty = trade_cash / price
             try:
-                _place_live_order_if_enabled(config, order_client, "BUY", qty)
+                _place_live_order_if_enabled(
+                    config,
+                    order_client,
+                    "BUY",
+                    qty,
+                    mode=_runtime_mode_from_metadata(runtime_metadata),
+                )
                 event = ledger.buy(
                     price=price,
                     qty=qty,
@@ -182,7 +188,13 @@ def _process_tick(
                 pass
     elif action == "SELL" and ledger.position_qty > 0:
         try:
-            _place_live_order_if_enabled(config, order_client, "SELL", ledger.position_qty)
+            _place_live_order_if_enabled(
+                config,
+                order_client,
+                "SELL",
+                ledger.position_qty,
+                mode=_runtime_mode_from_metadata(runtime_metadata),
+            )
             event = ledger.sell(
                 price=price,
                 qty=ledger.position_qty,
@@ -228,17 +240,44 @@ def _process_tick(
             "strategy": strategy.snapshot(),
             "last_report_at": last_report_at.isoformat() if last_report_at else None,
             "runtime": runtime_metadata or {},
-        }
+        },
+        strict=_runtime_mode_from_metadata(runtime_metadata) == "live",
     )
     return last_report_at
 
 
-def _place_live_order_if_enabled(config: dict, order_client: Any, side: str, qty: float) -> None:
+def _place_live_order_if_enabled(
+    config: dict,
+    order_client: Any,
+    side: str,
+    qty: float,
+    *,
+    mode: str | None = None,
+    runtime_mode: str | None = None,
+) -> None:
+    effective_mode = runtime_mode if runtime_mode is not None else mode
+    if str(effective_mode or "live").strip().lower() != "live":
+        return
     if not bool(config.get("live_order_enabled", False)):
         return
     if order_client is None:
         raise RuntimeError("live_order_enabled requires a configured BinanceRestClient.")
     order_client.place_market_order(str(config["symbol"]), side, qty)
+
+
+def _runtime_mode_from_metadata(runtime_metadata: dict[str, Any] | None) -> str:
+    return str((runtime_metadata or {}).get("mode") or "demo").strip().lower()
+
+
+def _apply_runtime_mode_safety(config: dict, mode: str) -> None:
+    if str(mode).strip().lower() == "live":
+        return
+    if bool(config.get("live_order_enabled", False)):
+        print(
+            "[SAFE_MODE] live_order_enabled=true ignored outside live runtime.",
+            flush=True,
+        )
+    config["live_order_enabled"] = False
 
 
 def _record_strategy_decision_if_enabled(
@@ -603,6 +642,7 @@ def main() -> None:
     config = load_config(args.config)
     config["demo_profile"] = args.demo_profile
     _apply_output_dir(config, args.output_dir)
+    _apply_runtime_mode_safety(config, mode)
     if args.min_trade_cash is not None:
         config["min_trade_cash"] = args.min_trade_cash
     db_recorder = create_runtime_recorder(config, mode)

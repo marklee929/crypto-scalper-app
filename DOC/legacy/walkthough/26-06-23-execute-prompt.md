@@ -924,4 +924,709 @@ FINAL REPORT FORMAT:
 ## 12. Remaining Risks
 ## 13. Next CODE_TASK_CANDIDATE
 
+PURPOSE FUNCTION:
+heart_beat_coin_scalper의 safe demo 실행에서 config.yaml의 live_order_enabled=True 때문에 BinanceRestClient가 없다는 RuntimeError가 발생하는 문제를 수정한다.
+
+수익은 최대, 손실은 최소를 목표로 하되, 실주문보다 생존성·검증성·모드 안전성을 우선한다.
+
+이번 수정의 핵심 목적:
+- demo / paper / backtest 모드에서는 live_order_enabled=True가 config.yaml에 있어도 절대 실주문 경로를 타지 않는다.
+- live 주문은 반드시 --live 명시 + runtime mode live + live_order_enabled=True + BinanceRestClient 존재 조건을 모두 만족해야만 가능하다.
+- run.bat 기본 실행은 계속 안전한 demo pump 로그 확인용이어야 한다.
+- API key / secret 원문은 출력하거나 문서/로그/테스트에 저장하지 않는다.
+
+AREA:
+RUNTIME_ENTRYPOINT + ORDER_GUARD + CONFIG_AND_SECRETS + TESTS
+
+MODE:
+GUARDED_FIX
+
+FOCUS:
+demo mode에서 live_order_enabled=True 설정값이 실주문 가드를 통과하지 못하게 runtime mode 기반 order guard를 추가한다.
+
+READ FIRST:
+- DOC/architecture/00_PRODUCT_NORTH_STAR.md
+- DOC/architecture/04_LOCAL_DEVELOPMENT_RUNTIME_GUIDE.md
+- DOC/architecture/05_CODEX_HARNESS_GUIDE.md
+- DOC/architecture/06_WORK_AREA_REGISTRY.md
+- run.py
+- run.bat
+- core/config.py
+- tests/test_run_guards.py
+
+BUG CONTEXT:
+현재 run.bat 기본 실행은 다음처럼 safe demo pump로 들어간다.
+
+```bat
+--mode demo --demo-profile pump --ticks 240 --output-dir .runtime\demo-pump
+```
+
+GUARDED_FIX COMPLETION REPORT — 2026-06-23
+
+- AREA: RUNTIME_ENTRYPOINT + ORDER_GUARD + CONFIG_AND_SECRETS + TESTS
+- MODE: GUARDED_FIX
+- PURPOSE FUNCTION: safe demo 실행에서 `live_order_enabled=True` 설정값이 실주문 가드를 통과하지 못하게 runtime mode 기반 order guard를 추가한다.
+- files inspected:
+  - `DOC/architecture/00_PRODUCT_NORTH_STAR.md`
+  - `DOC/architecture/04_LOCAL_DEVELOPMENT_RUNTIME_GUIDE.md`
+  - `DOC/architecture/05_CODEX_HARNESS_GUIDE.md`
+  - `DOC/architecture/06_WORK_AREA_REGISTRY.md`
+  - `DOC/walkthough/26-06-23-execute-prompt.md`
+  - `run.py`
+  - `run.bat`
+  - `core/config.py`
+  - `tests/test_run_guards.py`
+- files modified:
+  - `run.py`
+  - `tests/test_run_guards.py`
+  - `DOC/walkthough/26-06-23-execute-prompt.md`
+- implementation summary:
+  - `_place_live_order_if_enabled()`에 `runtime_mode` 조건을 추가했다.
+  - runtime mode가 `live`가 아니면 `live_order_enabled=True`여도 실주문 client를 요구하거나 호출하지 않는다.
+  - `_process_tick()`은 `runtime_metadata.mode`를 기준으로 BUY/SELL 실주문 guard를 호출한다.
+  - runtime metadata가 없으면 안전 기본값 `demo`로 처리한다.
+  - direct live guard 호출은 기존처럼 `runtime_mode=live` 기본값을 유지해 `live_order_enabled=True`와 client 없음이면 RuntimeError를 발생시킨다.
+  - live runner test에서 실제 coroutine warning이 생기지 않도록 `run_live`를 일반 mock으로 고정했다.
+- tests/checks run:
+  - `python -m unittest tests.test_run_guards -v`
+  - `python -m unittest discover -v`
+  - `git diff -- run.py tests\test_run_guards.py --check`
+- test result:
+  - `tests.test_run_guards`: 16 tests passed
+  - full unittest discover: 60 tests passed
+- DB touched: NO
+- external API touched: NO
+- actual order sent: NO
+- Binance REST payload changed: NO
+- `live_order_enabled` config value changed: NO
+- config.yaml touched: NO
+- API key/secret exposure risk: LOW; raw secret values were not opened or copied
+- protected areas touched:
+  - ORDER_GUARD changed only to add runtime-mode narrowing
+  - BINANCE_REST_EXECUTION request payload and client code were not changed
+- state/log impact:
+  - no existing state/log deletion
+  - safe demo path can continue writing demo runtime state/logs under configured output paths
+- remaining risks:
+  - `config.yaml` may still contain `live_order_enabled=True`, but demo runtime now ignores it for actual order execution.
+  - live mode still intentionally requires `--live`, runtime mode `live`, `live_order_enabled=True`, and a configured BinanceRestClient/API credentials.
+- stop conditions encountered: none
+- next CODE_TASK_CANDIDATE:
+  - READ_ONLY_AUDIT for live asset snapshot / reconciliation guard can continue separately after this order guard fix.
+
+PURPOSE FUNCTION:
+heart_beat_coin_scalper의 run.bat safe demo pump 실행이 Windows 환경에서 state 저장 PermissionError 없이 완료되도록 수정하고, demo mode에서는 config.yaml의 live_order_enabled=True가 실주문 경로로 절대 전달되지 않도록 검증한다.
+
+수익은 최대, 손실은 최소를 목표로 하되, 이번 작업에서는 실주문보다 demo 안전 실행, 상태 저장 안정성, 검증 가능성을 우선한다.
+
+AREA:
+STATE_RECOVERY + RUNTIME_ENTRYPOINT + ORDER_GUARD + CONFIG_AND_SECRETS + TESTS
+
+MODE:
+GUARDED_FIX
+
+FOCUS:
+Windows에서 `.runtime\demo-pump\state.tmp -> state.json` replace 중 PermissionError가 발생하는 문제를 해결한다.
+동시에 demo mode에서 live_order_enabled=True가 출력/전달되는 문제를 정리한다.
+
+BUG CONTEXT:
+run.bat 기본 실행:
+
+```bat
+python run.py --mode demo --demo-profile pump --ticks 240 --output-dir .runtime\demo-pump
+
+현재 출력:
+
+[RUNTIME_CONFIG] mode=demo ... live_order_enabled=True state_path=.runtime\demo-pump\state.json
+[RUN] mode=demo profile=pump ...
+PermissionError: [WinError 5] 액세스가 거부되었습니다: '.runtime\\demo-pump\\state.tmp' -> '.runtime\\demo-pump\\state.json'
+
+현재 core/state.py:
+
+def save(self, state):
+    self.path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = self.path.with_suffix(".tmp")
+    temp_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    temp_path.replace(self.path)
+
+문제:
+
+fixed temp path state.tmp 사용
+Windows에서 target state.json 잠금 시 replace 실패
+PermissionError retry 없음
+fallback snapshot 없음
+demo 실행 중 상태 저장 실패가 전체 런타임을 죽임
+demo mode인데 live_order_enabled=True가 그대로 남아 있음
+
+READ FIRST:
+
+DOC/architecture/04_LOCAL_DEVELOPMENT_RUNTIME_GUIDE.md
+DOC/architecture/05_CODEX_HARNESS_GUIDE.md
+DOC/architecture/06_WORK_AREA_REGISTRY.md
+run.py
+run.bat
+core/state.py
+tests/test_run_guards.py
+tests/test_candle_aggregator.py
+
+REQUIRED FIX 1: StateStore.save Windows-safe 처리
+
+core/state.py를 수정한다.
+
+요구사항:
+
+fixed state.tmp 대신 unique temp file을 사용한다.
+예:
+state.<pid>.<timestamp>.tmp
+또는 tempfile.NamedTemporaryFile(delete=False, dir=parent)
+replace() 실패 시 짧은 retry를 한다.
+예:
+5회
+0.05s / 0.1s / 0.2s 정도
+PermissionError만 retry
+retry 후에도 실패하면 runtime을 바로 죽이지 말고 recovery snapshot을 남긴다.
+예:
+state.recovery.<timestamp>.json
+또는 state.failed.<timestamp>.json
+save 실패가 발생해도 적어도 demo mode에서는 전체 실행을 죽이지 않게 한다.
+단, live mode에서 state 저장 실패를 무시하고 계속 주문하는 구조는 금지한다.
+live mode 정책은 별도 guard로 남긴다.
+JSON write는 UTF-8 유지.
+partial write 방지.
+temp 파일 cleanup 시도.
+load()는 기존 state.json이 깨졌을 때 {} 반환하는 현재 동작을 유지하되, PermissionError도 안전하게 처리할지 검토한다.
+
+권장 구현 형태:
+
+class StateStore:
+    def save(self, state, *, strict: bool = False) -> bool:
+        ...
+        try:
+            atomic replace with retries
+            return True
+        except PermissionError:
+            write recovery snapshot
+            if strict:
+                raise
+            return False
+
+또는 기존 호출부 호환을 위해 save()는 예외를 삼키고 bool을 반환해도 된다.
+단, tests로 보장할 것.
+
+REQUIRED FIX 2: demo mode에서 live_order_enabled 무력화
+
+run.py에 runtime mode safety helper를 추가한다.
+
+권장:
+
+def _apply_runtime_mode_safety(config: dict, mode: str) -> None:
+    if mode != "live" and bool(config.get("live_order_enabled", False)):
+        print("[SAFE_MODE] live_order_enabled=true ignored outside live runtime.", flush=True)
+        config["live_order_enabled"] = False
+
+main()에서 config load 후, run_demo/run_live 전에 호출한다.
+
+순서 후보:
+
+mode = _resolve_runtime_mode(args)
+config = load_config(args.config)
+config["demo_profile"] = args.demo_profile
+_apply_output_dir(config, args.output_dir)
+_apply_runtime_mode_safety(config, mode)
+
+결과:
+
+run.bat demo 실행 로그에서 live_order_enabled=False가 찍혀야 한다.
+demo mode에서 config.yaml의 live_order_enabled=True가 있어도 _place_live_order_if_enabled()가 live 주문을 시도하면 안 된다.
+
+REQUIRED FIX 3: _place_live_order_if_enabled mode-aware guard
+
+현재 함수가 config만 보고 판단하면 위험하다.
+
+권장:
+
+def _place_live_order_if_enabled(config, order_client, side, qty, *, mode="demo"):
+    if mode != "live":
+        return
+    if not bool(config.get("live_order_enabled", False)):
+        return
+    if order_client is None:
+        raise RuntimeError(...)
+    order_client.place_market_order(...)
+
+그리고 _process_tick()에서 runtime_metadata의 mode를 넘긴다.
+
+mode = str((runtime_metadata or {}).get("mode") or "demo")
+_place_live_order_if_enabled(config, order_client, "BUY", qty, mode=mode)
+
+SELL도 동일.
+
+REQUIRED FIX 4: run.bat safe demo 유지
+
+run.bat 기본값 유지:
+
+--mode demo --demo-profile pump --ticks 240 --output-dir .runtime\demo-pump
+
+추가로 시작 전에 출력 폴더를 만들 필요가 있으면 안전하게 생성해도 된다.
+
+예:
+
+if not exist ".runtime\demo-pump" mkdir ".runtime\demo-pump"
+
+단, 기존 state/log 삭제는 금지.
+
+TESTS TO ADD OR UPDATE:
+
+StateStore save basic
+def test_state_store_save_creates_state_json(self):
+    ...
+StateStore replace PermissionError fallback
+mock Path.replace 또는 os.replace가 PermissionError를 내게 하고:
+save가 demo/non-strict에서 예외를 던지지 않는지
+recovery snapshot이 생기는지
+False를 반환하는지, 또는 warning 처리되는지 확인
+StateStore unique temp
+save를 여러 번 호출해도 fixed state.tmp 충돌이 없는지 확인
+demo mode forces live_order_enabled false
+def test_demo_mode_overrides_live_order_enabled_true(self):
+    config = {"live_order_enabled": True}
+    _apply_runtime_mode_safety(config, "demo")
+    self.assertFalse(config["live_order_enabled"])
+live mode preserves live_order_enabled
+def test_live_mode_preserves_live_order_enabled(self):
+    config = {"live_order_enabled": True}
+    _apply_runtime_mode_safety(config, "live")
+    self.assertTrue(config["live_order_enabled"])
+_place_live_order_if_enabled ignores demo
+def test_place_live_order_ignored_outside_live_even_if_enabled(self):
+    _place_live_order_if_enabled({"live_order_enabled": True, "symbol": "ROBOUSDT"}, None, "BUY", 1.0, mode="demo")
+live still requires client
+def test_live_order_guard_requires_client_in_live_mode(self):
+    with self.assertRaises(RuntimeError):
+        _place_live_order_if_enabled({"live_order_enabled": True, "symbol": "ROBOUSDT"}, None, "BUY", 1.0, mode="live")
+main demo log config safety
+load_config returns live_order_enabled=True
+argv demo
+run_demo receives config live_order_enabled=False
+
+VALIDATION COMMANDS:
+실제 외부 주문 없이 아래만 실행한다.
+
+python -m unittest tests.test_run_guards
+python -m unittest discover tests
+python run.py --mode demo --demo-profile pump --ticks 240 --output-dir .runtime\demo-pump
+
+검증 기대:
+
+demo 실행 완료
+[RUNTIME_CONFIG] ... mode=demo ... live_order_enabled=False
+[RUN] mode=demo profile=pump ...
+[DONE] mode=demo ...
+.runtime\demo-pump\state.json 생성 또는 갱신
+.runtime\demo-pump\strategy.log 생성 또는 갱신
+actual order sent: NO
+external API touched: NO
+
+FORBIDDEN:
+
+실제 Binance REST order 전송
+API key / secret 출력
+config.yaml 실제 secret 수정
+live_order_enabled를 config.yaml에서 직접 false로 커밋
+order size 변경
+Binance REST payload 변경
+strategy threshold 변경
+hard exit 변경
+기존 state/log 삭제
+SQLite 추가
+.runtime 산출물 커밋
+
+SUCCESS CRITERIA:
+
+run.bat 기본 실행이 PermissionError 없이 완료된다.
+demo mode에서 live_order_enabled=True config가 안전하게 false로 무력화된다.
+demo mode에서는 BinanceRestClient가 필요하지 않다.
+--mode live 단독은 계속 차단된다.
+--live 명시 시 live runtime으로만 간다.
+live mode + live_order_enabled=True + client None은 여전히 RuntimeError다.
+StateStore.save는 Windows 파일 잠금/replace 실패에 대해 retry 또는 recovery snapshot을 남긴다.
+테스트가 통과한다.
+actual order sent: NO
+raw secret exposure: NO
+
+REPORT:
+수정 후 다음을 보고한다.
+
+수정 파일
+PermissionError 원인
+StateStore save 변경 내용
+demo mode live_order_enabled 무력화 방식
+mode-aware order guard 적용 여부
+run.bat demo pump 검증 결과
+tests 결과
+actual order sent 여부
+external API touched 여부
+secret 노출 여부
+남은 위험
+```
+
+GUARDED_FIX COMPLETION REPORT — 2026-06-23
+
+- AREA: STATE_RECOVERY + RUNTIME_ENTRYPOINT + ORDER_GUARD + CONFIG_AND_SECRETS + TESTS
+- MODE: GUARDED_FIX
+- PURPOSE FUNCTION: run.bat safe demo pump 실행이 Windows state replace PermissionError 없이 완료되도록 하고, demo mode에서는 `live_order_enabled=True`가 실주문 경로로 전달되지 않도록 검증한다.
+- files inspected:
+  - `DOC/architecture/04_LOCAL_DEVELOPMENT_RUNTIME_GUIDE.md`
+  - `DOC/architecture/05_CODEX_HARNESS_GUIDE.md`
+  - `DOC/architecture/06_WORK_AREA_REGISTRY.md`
+  - `DOC/walkthough/26-06-23-execute-prompt.md`
+  - `run.py`
+  - `run.bat`
+  - `core/config.py`
+  - `core/state.py`
+  - `tests/test_run_guards.py`
+  - `tests/test_candle_aggregator.py`
+- files modified:
+  - `core/state.py`
+  - `run.py`
+  - `tests/test_run_guards.py`
+  - `tests/test_state_store.py`
+  - `DOC/walkthough/26-06-23-execute-prompt.md`
+- PermissionError cause:
+  - 기존 `StateStore.save()`는 고정 temp path `state.tmp`를 사용하고, Windows에서 target `state.json`이 잠긴 상태의 `replace()` 실패를 retry/recovery 없이 그대로 올렸다.
+  - demo 실행 중 state 저장 실패가 전체 runtime 실패로 이어질 수 있었다.
+- StateStore save changes:
+  - fixed `state.tmp` 대신 `state.<pid>.<timestamp>.tmp` unique temp file을 사용한다.
+  - JSON은 UTF-8로 temp file에 먼저 쓰고, `Path.replace()`로 atomic replace를 시도한다.
+  - `PermissionError`에 대해서만 짧은 retry를 수행한다.
+  - retry 후에도 실패하면 `state.recovery.<timestamp>.json` recovery snapshot을 남긴다.
+  - non-strict save는 warning 후 `False`를 반환하고 demo runtime을 죽이지 않는다.
+  - strict save는 recovery snapshot을 남긴 뒤 `PermissionError`를 다시 올린다.
+  - `load()`는 JSON decode failure와 PermissionError에서 기존처럼 `{}`를 반환한다.
+- demo mode live_order_enabled safety:
+  - `_apply_runtime_mode_safety(config, mode)`를 추가했다.
+  - runtime mode가 `live`가 아니면 `live_order_enabled=True`를 로그 warning 후 `False`로 무력화한다.
+  - `main()`에서 config load/output-dir 적용 뒤 runtime recorder/runner 생성 전에 적용한다.
+  - demo runtime log에는 `live_order_enabled=False`가 출력된다.
+- mode-aware order guard:
+  - `_place_live_order_if_enabled()`가 `mode` 또는 기존 호환용 `runtime_mode`를 받는다.
+  - mode가 `live`가 아니면 `live_order_enabled=True`여도 order client를 요구하거나 호출하지 않는다.
+  - `_process_tick()` BUY/SELL 경로는 `runtime_metadata.mode`를 넘긴다.
+  - live mode + `live_order_enabled=True` + client 없음은 여전히 `RuntimeError`다.
+- run.bat safe demo pump validation:
+  - command: `python run.py --mode demo --demo-profile pump --ticks 240 --output-dir .runtime\demo-pump`
+  - result: completed successfully
+  - observed:
+    - `[SAFE_MODE] live_order_enabled=true ignored outside live runtime.`
+    - `[RUNTIME_CONFIG] ... mode=demo ... live_order_enabled=False ...`
+    - `[RUN] mode=demo profile=pump ...`
+    - `[DONE] mode=demo processed_ticks=240 closed_candles=20 new_trades=3 ...`
+  - files verified:
+    - `.runtime\demo-pump\state.json`: exists
+    - `.runtime\demo-pump\strategy.log`: exists
+    - `.runtime\demo-pump\trades.log`: exists
+- tests/checks run:
+  - `python -m unittest tests.test_state_store tests.test_run_guards -v`
+  - `python -m unittest discover tests -v`
+  - `git diff -- core\state.py run.py tests\test_state_store.py tests\test_run_guards.py --check`
+  - `python run.py --mode demo --demo-profile pump --ticks 240 --output-dir .runtime\demo-pump`
+- test result:
+  - focused tests: 24 tests passed
+  - full discover: 68 tests passed
+- actual order sent: NO
+- external API touched: NO
+- Binance REST payload changed: NO
+- config.yaml touched: NO
+- live_order_enabled config file value changed: NO
+- raw secret exposure: NO
+- state/log impact:
+  - `.runtime\demo-pump` local runtime artifacts were created/updated by the required demo validation.
+  - existing state/log files were not deleted.
+  - `.runtime` artifacts remain runtime output and must not be committed.
+- remaining risks:
+  - If another process keeps `state.json` locked longer than the retry window, demo will continue with a recovery snapshot and warning; operator should inspect the recovery file.
+  - live mode intentionally remains strict for state save failure to avoid continuing automated orders with uncertain local state.
+- stop conditions encountered: none
+- next CODE_TASK_CANDIDATE:
+  - READ_ONLY_AUDIT for live asset snapshot / reconciliation guard remains the next protected design task.
+
 [SCALPER_EXECUTION_COMPLETE]
+
+PURPOSE FUNCTION:
+heart_beat_coin_scalper의 PostgreSQL DB 테이블이 실제로 생성되지 않고 데이터가 쌓이지 않는 원인을 검토하고, 필요한 경우 안전한 migration 실행 경로와 runtime data recording을 추가한다.
+
+수익은 최대, 손실은 최소를 목표로 하되, 이번 작업에서는 실주문보다 DB 기록 안정성, migration 안전성, demo/fake asset 추적, secret 보호를 우선한다.
+
+AREA:
+POSTGRES_STORAGE + DB_MIGRATION + RUNTIME_ENTRYPOINT + ORDER_GUARD + ASSET_TRACKING + LOGGING_REPORTING + TESTS
+
+MODE:
+READ_ONLY_AUDIT first, then GUARDED_FIX if confirmed
+
+FOCUS:
+현재 `storage/schema/001_scalper_core.sql`에는 테이블 생성 SQL이 존재하지만, 실제 local PostgreSQL에 테이블이 생성되지 않는 원인을 확인한다.
+원인이 migration 미실행 또는 DB recorder disabled라면, 안전한 방식으로 테이블 생성과 demo pump 데이터 적재를 추가한다.
+
+READ FIRST:
+- DOC/architecture/08_DATABASE_ARCHITECTURE.md
+- DOC/architecture/04_LOCAL_DEVELOPMENT_RUNTIME_GUIDE.md
+- DOC/architecture/05_CODEX_HARNESS_GUIDE.md
+- DOC/architecture/06_WORK_AREA_REGISTRY.md
+- run.py
+- run.bat
+- storage/postgres.py
+- storage/migrations.py
+- storage/runtime_repository.py
+- storage/records.py
+- storage/fake_assets.py
+- storage/schema/001_scalper_core.sql
+- tests/
+
+KNOWN CURRENT OBSERVATION:
+- `storage/schema/001_scalper_core.sql` defines tables.
+- `storage/migrations.py` has `apply_migrations()`.
+- `storage/postgres.py` has `ensure_schema()`.
+- `storage/runtime_repository.py` creates DB recorder only when DB is enabled.
+- run.bat safe demo currently completes, but DB tables appear not created.
+- run.py may create recorder, but migration may not be invoked automatically.
+- If SCALPER_DB_ENABLED or DATABASE_URL is missing, DisabledRuntimeRecorder is used and no DB data is written.
+
+PHASE 0: READ_ONLY_AUDIT
+
+TASK:
+1. Confirm whether migration SQL exists.
+2. Confirm whether migration runner exists.
+3. Confirm whether run.py or create_runtime_recorder calls `ensure_schema()` or `apply_migrations()`.
+4. Confirm whether DB is disabled unless `SCALPER_DB_ENABLED` or config db flag is set.
+5. Confirm whether run.bat sets any DB env variable.
+6. Confirm whether missing tables would cause recorder.start() to fail.
+7. Confirm whether demo data recording only happens if db_recorder is enabled.
+8. Report exact cause:
+   - DB disabled
+   - DATABASE_URL missing
+   - migration not executed
+   - schema missing
+   - recorder insert failure
+   - PostgreSQL dependency missing
+   - other
+
+DO NOT MODIFY in PHASE 0.
+
+PHASE 0 REPORT:
+- tables SQL present: YES/NO
+- migration runner present: YES/NO
+- migration auto-run present: YES/NO
+- DB enable condition
+- likely reason tables not created
+- recommended fix
+- protected risk
+
+PHASE 1: GUARDED_FIX — explicit migration command
+
+If PHASE 0 confirms migration is not actually executed, add a safe explicit migration command.
+
+REQUIRED:
+1. Add CLI option to run.py:
+
+```text
+--migrate-db
+
+Behavior:
+
+Requires DATABASE_URL.
+Runs safe migration via storage.postgres.ensure_schema(connection) or apply_migrations(connection).
+Prints applied migration versions.
+Does not start demo/live trading loop.
+Does not call Binance WebSocket.
+Does not call Binance REST.
+Does not require API key/secret.
+Does not print DATABASE_URL raw value.
+Redacts DATABASE_URL in logs.
+
+Expected command:
+
+python run.py --migrate-db
+
+Expected output:
+
+[DB_MIGRATION] database=postgresql://user:***@localhost:5432/heart_beat_coin_scalper
+[DB_MIGRATION] applied=[1]
+[DB_MIGRATION] done
+If tables already exist, it should safely return:
+[DB_MIGRATION] applied=[]
+[DB_MIGRATION] done
+Migration SQL safety:
+Keep forbidden SQL validation.
+Do not allow DROP TABLE.
+Do not allow TRUNCATE.
+Do not allow DROP SCHEMA.
+Do not allow destructive ALTER DROP.
+
+PHASE 2: GUARDED_FIX — optional DB auto-migration for demo
+
+Add optional auto-migrate, but do not force it silently.
+
+Preferred env/config:
+
+SCALPER_DB_ENABLED=1
+SCALPER_DB_AUTO_MIGRATE=1
+DATABASE_URL=...
+
+Behavior:
+
+If DB enabled and auto migrate enabled, run migration before recorder.start().
+If DB enabled but auto migrate disabled and tables missing, fail with clear message recommending python run.py --migrate-db.
+For demo mode, if DB disabled, continue without DB and print:
+[DB] disabled reason=...
+For live mode, do not silently ignore DB errors if live-order reconciliation later depends on DB. For now report warning/stop according to current policy.
+
+PHASE 3: GUARDED_FIX — run.bat DB setup helper
+
+Do not put password in run.bat.
+
+Add a separate safe helper bat if useful:
+
+migrate_db.bat
+
+or add commented instructions in run.bat output.
+
+Recommended new file:
+
+@echo off
+setlocal
+cd /d "%~dp0"
+
+echo [DB] Running PostgreSQL migration.
+echo [DB] Requires DATABASE_URL env var.
+python "%~dp0run.py" --migrate-db
+
+Do not include actual DATABASE_URL.
+
+PHASE 4: GUARDED_FIX — demo data accumulation path
+
+Ensure that when DB is enabled and schema exists, safe demo pump records data.
+
+Expected command:
+
+set SCALPER_DB_ENABLED=1
+set SCALPER_DB_AUTO_MIGRATE=1
+set DATABASE_URL=postgresql://...
+python run.py --mode demo --demo-profile pump --ticks 240 --output-dir .runtime\demo-pump
+
+Expected DB writes:
+
+scalper.runtime_run: 1 row
+scalper.runtime_config_snapshot: 1 row
+scalper.strategy_decision: rows for closed candles
+scalper.ledger_snapshot: rows for closed candles
+scalper.order_intent / execution_result / demo_fake_asset_snapshot: rows if fake buy/sell occurs
+No live_asset_snapshot writes in demo
+
+Important:
+
+15m/30m/1h/4h market_candle may not yet be populated unless a timeframe aggregator exists.
+If market_candle is not yet wired, report as CODE_TASK_CANDIDATE rather than faking data.
+Do not store 1m/raw tick by default.
+Do not fake 15m/30m/1h/4h rows unless actual aggregation logic exists.
+
+PHASE 5: TESTS
+
+Add or update tests:
+
+migration dry-run/list test
+def test_migration_files_load_and_validate():
+    ...
+forbidden SQL test
+def test_forbidden_migration_sql_rejected():
+    ...
+migrate-db CLI test with mocked connection
+def test_migrate_db_command_runs_migration_without_runtime_loop():
+    ...
+DB disabled by default test
+def test_db_disabled_without_env():
+    ...
+DB auto migrate calls ensure_schema when enabled
+def test_db_auto_migrate_when_enabled():
+    ...
+recorder disabled does not break demo
+def test_demo_runs_with_disabled_recorder():
+    ...
+no raw DATABASE_URL output test
+def test_database_url_redacted_in_migration_output():
+    ...
+demo does not write live asset snapshot
+def test_demo_fake_execution_does_not_write_live_asset():
+    ...
+
+VALIDATION COMMANDS:
+Run without external order:
+
+python -m unittest tests.test_run_guards
+python -m unittest discover tests
+
+Manual DB validation, only after user has local PostgreSQL ready:
+
+set SCALPER_DB_ENABLED=1
+set SCALPER_DB_AUTO_MIGRATE=1
+set DATABASE_URL=postgresql://USER:PASSWORD@localhost:5432/heart_beat_coin_scalper
+python run.py --migrate-db
+python run.py --mode demo --demo-profile pump --ticks 240 --output-dir .runtime\demo-pump
+
+Then verify in PostgreSQL:
+
+SELECT table_schema, table_name
+FROM information_schema.tables
+WHERE table_schema = 'scalper'
+ORDER BY table_name;
+
+SELECT count(*) FROM scalper.runtime_run;
+SELECT count(*) FROM scalper.runtime_config_snapshot;
+SELECT count(*) FROM scalper.strategy_decision;
+SELECT count(*) FROM scalper.ledger_snapshot;
+SELECT count(*) FROM scalper.demo_fake_asset_snapshot;
+
+FORBIDDEN:
+
+Actual Binance REST order
+API key / secret output
+DATABASE_URL raw output
+config.yaml secret edit
+live_order_enabled config edit
+order size change
+Binance REST payload change
+strategy threshold change
+hard exit change
+DROP TABLE
+TRUNCATE
+SQLite operating DB
+fake live_asset_snapshot from demo
+.runtime output commit
+DB password in run.bat
+
+SUCCESS CRITERIA:
+
+python run.py --migrate-db creates scalper schema and tables.
+Running migration twice is safe.
+DB disabled mode still runs demo without DB.
+DB enabled + DATABASE_URL + auto migrate creates tables if missing.
+demo pump writes runtime/config/decision/ledger/fake asset rows when DB enabled.
+demo does not touch live_asset_snapshot.
+no raw secret or DATABASE_URL is printed.
+actual order sent: NO.
+external Binance API touched: NO.
+
+REPORT:
+After completion, report:
+
+root cause of missing tables
+files modified
+migration command added
+DB enable env vars
+tables created
+which tables receive data in demo
+which tables are still not populated and why
+tests run
+manual validation commands
+actual order sent 여부
+secret exposure 여부
+remaining CODE_TASK_CANDIDATE
