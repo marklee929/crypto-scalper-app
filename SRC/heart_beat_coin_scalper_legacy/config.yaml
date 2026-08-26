@@ -35,8 +35,8 @@ ws_status_interval_sec: 30
 ws_max_backoff_sec: 60
 
 # Binance REST order parameters
-binance_api_key: "RDbIvEiuaAroK2FmMvisC3gHiq3u4g1dGI322ApoX8vzfaUNALYIlRl9TxcjAKMj"
-binance_api_secret: "EV7kHHuxVzYpbUCKUwrCrbPI5C6cx0vW0ozjoG2dwwajXcF99FArxeyKfLi65hcy"
+binance_api_key: ""
+binance_api_secret: ""
 binance_rest_url: https://api.binance.com
 live_order_enabled: true
 
